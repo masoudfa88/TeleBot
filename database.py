@@ -83,13 +83,27 @@ async def init_db():
                 UNIQUE(user_id, channel_id)
             )
         """)
+                
         # تلاش زوری برای اضافه کردن ستون ایتا به دیتابیس‌های ساخته شده‌ی قدیمی
         try:
             await db.execute("ALTER TABLE daily_stats ADD COLUMN eitaa_sent_count INTEGER DEFAULT 0")
         except:
             pass
         # 👆 ------------------------------------------- 👆
+        try:
+            await db.execute("ALTER TABLE users ADD COLUMN active_license TEXT")
+        except: pass
         
+        try:
+            await db.execute("ALTER TABLE licenses ADD COLUMN max_users INTEGER DEFAULT 1")
+            await db.execute("ALTER TABLE licenses ADD COLUMN max_sources INTEGER DEFAULT 1000")
+            await db.execute("ALTER TABLE licenses ADD COLUMN max_targets INTEGER DEFAULT 1000")
+            await db.execute("ALTER TABLE licenses ADD COLUMN owner_id INTEGER")
+        except: pass
+
+        # سازگار کردن لایسنس فعال فعلی شما با سیستم جدید (جلوگیری از اختلال)
+        await db.execute("UPDATE users SET active_license = (SELECT license_key FROM licenses WHERE used_by = users.user_id LIMIT 1) WHERE active_license IS NULL")
+        await db.execute("UPDATE licenses SET owner_id = used_by WHERE owner_id IS NULL AND is_used = 1")
         try:
             async with db.execute("SELECT user_id, channel_id, append_text FROM target_channels") as cursor:
                 rows = await cursor.fetchall()
@@ -99,7 +113,21 @@ async def init_db():
             pass
 
         await db.commit()
-
+        
+# 2. تابع جدید برای پیدا کردن شناسه مالک (Owner)
+async def get_owner(user_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("""
+            SELECT l.owner_id 
+            FROM users u 
+            LEFT JOIN licenses l ON u.active_license = l.license_key 
+            WHERE u.user_id = ?
+        """, (user_id,)) as cursor:
+            row = await cursor.fetchone()
+            if row and row[0]:
+                return row[0]
+            return user_id
+        
 # --- توابع کاربر و لایسنس ---
 async def check_user(user_id: int):
     async with aiosqlite.connect(DB_PATH) as db:
@@ -111,56 +139,108 @@ async def add_license(license_key: str):
         await db.execute("INSERT OR IGNORE INTO licenses (license_key) VALUES (?)", (license_key,))
         await db.commit()
 
+# تابع تولید لایسنس ادمین با تنظیمات
+async def add_advanced_license(license_key: str, max_users: int, max_sources: int, max_targets: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+            INSERT OR IGNORE INTO licenses 
+            (license_key, max_users, max_sources, max_targets) 
+            VALUES (?, ?, ?, ?)
+        """, (license_key, max_users, max_sources, max_targets))
+        await db.commit()
+    
 async def get_all_licenses():
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute('''
-            SELECT l.license_key, l.is_used, l.used_by, u.name 
+            SELECT l.license_key, l.is_used, l.used_by, u.name, l.max_users, l.max_sources, l.max_targets 
             FROM licenses l 
             LEFT JOIN users u ON l.used_by = u.user_id
         ''') as cursor:
             return await cursor.fetchall()
 
+async def update_license_limits(license_key: str, max_users: int, max_sources: int, max_targets: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+            UPDATE licenses 
+            SET max_users = ?, max_sources = ?, max_targets = ? 
+            WHERE license_key = ?
+        """, (max_users, max_sources, max_targets, license_key))
+        await db.commit()
+        
+# 3. بازنویسی سیستم ثبت لایسنس
 async def use_license(user_id: int, name: str, license_key: str):
     async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT is_used FROM licenses WHERE license_key = ?", (license_key,)) as cursor:
+        async with db.execute("SELECT max_users, owner_id FROM licenses WHERE license_key = ?", (license_key,)) as cursor:
             row = await cursor.fetchone()
-            if row and not row[0]: 
-                await db.execute("UPDATE licenses SET is_used = 1, used_by = ? WHERE license_key = ?", (user_id, license_key))
+            if not row: return False # لایسنس وجود ندارد
+            max_users, owner_id = row
+
+        # بررسی تعداد کاربرانی که الان دارند از این لایسنس استفاده می‌کنند
+        async with db.execute("SELECT COUNT(*) FROM users WHERE active_license = ?", (license_key,)) as cursor:
+            current_users = (await cursor.fetchone())[0]
+
+        # بررسی اینکه آیا خود این کاربر از قبل عضو این لایسنس هست یا نه
+        async with db.execute("SELECT user_id FROM users WHERE user_id = ? AND active_license = ?", (user_id, license_key)) as cursor:
+            already_using = await cursor.fetchone()
+
+        if not already_using and current_users >= max_users:
+            return "FULL" # ظرفیت تکمیل است
+
+        if owner_id is None:
+            # اولین نفری که لایسنس را میزند مالک می‌شود
+            owner_id = user_id
+            await db.execute("UPDATE licenses SET is_used = 1, owner_id = ?, used_by = ? WHERE license_key = ?", (owner_id, owner_id, license_key))
+        
+        async with db.execute("SELECT user_id FROM users WHERE user_id = ?", (user_id,)) as u_cursor:
+            if await u_cursor.fetchone():
+                await db.execute("UPDATE users SET name = ?, is_active = 1, active_license = ? WHERE user_id = ?", (name, license_key, user_id))
+            else:
+                await db.execute("INSERT INTO users (user_id, name, is_active, active_license) VALUES (?, ?, 1, ?)", (user_id, name, license_key))
                 
-                async with db.execute("SELECT user_id FROM users WHERE user_id = ?", (user_id,)) as u_cursor:
-                    if await u_cursor.fetchone():
-                        await db.execute("UPDATE users SET name = ?, is_active = 1 WHERE user_id = ?", (name, user_id))
-                    else:
-                        await db.execute("INSERT INTO users (user_id, name, is_active) VALUES (?, ?, 1)", (user_id, name))
-                        
-                await db.commit()
-                return True
-            return False
+        await db.commit()
+        return True
+
+# 4. توابع بررسی محدودیت‌ها
+async def get_license_limits(owner_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT max_sources, max_targets FROM licenses WHERE owner_id = ?", (owner_id,)) as cursor:
+            row = await cursor.fetchone()
+            return row if row else (1000, 1000)
+
+async def check_source_limit(owner_id: int):
+    limits = await get_license_limits(owner_id)
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT COUNT(*) FROM subscriptions WHERE user_id = ?", (owner_id,)) as cursor:
+            count = (await cursor.fetchone())[0]
+    return count < limits[0]
+
+async def check_target_limit(owner_id: int):
+    limits = await get_license_limits(owner_id)
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT COUNT(*) FROM targets WHERE user_id = ?", (owner_id,)) as c1:
+            t1 = (await c1.fetchone())[0]
+        async with db.execute("SELECT COUNT(*) FROM bale_targets WHERE user_id = ?", (owner_id,)) as c2:
+            t2 = (await c2.fetchone())[0]
+    return (t1 + t2) < limits[1]
 
 async def delete_license(license_key: str):
     async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT used_by FROM licenses WHERE license_key = ?", (license_key,)) as cursor:
-            row = await cursor.fetchone()
-            user_id = row[0] if row else None
+        async with db.execute("SELECT user_id FROM users WHERE active_license = ?", (license_key,)) as cursor:
+            users_to_deactivate = [row[0] for row in await cursor.fetchall()]
         
-        if user_id:
-            await db.execute("UPDATE users SET is_active = 0 WHERE user_id = ?", (user_id,))
-            
+        await db.execute("UPDATE users SET is_active = 0, active_license = NULL WHERE active_license = ?", (license_key,))
         await db.execute("DELETE FROM licenses WHERE license_key = ?", (license_key,))
         await db.commit()
-        return user_id
+        
+        return users_to_deactivate
 
 async def change_user_license(user_id: int, new_license_key: str):
     async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT is_used FROM licenses WHERE license_key = ?", (new_license_key,)) as cursor:
+        async with db.execute("SELECT name FROM users WHERE user_id = ?", (user_id,)) as cursor:
             row = await cursor.fetchone()
-            if row and not row[0]:
-                await db.execute("UPDATE licenses SET is_used = 0, used_by = NULL WHERE used_by = ?", (user_id,))
-                await db.execute("UPDATE licenses SET is_used = 1, used_by = ? WHERE license_key = ?", (user_id, new_license_key))
-                await db.execute("UPDATE users SET is_active = 1 WHERE user_id = ?", (user_id,))
-                await db.commit()
-                return True
-    return False
+            name = row[0] if row else "کاربر"
+            
+    return await use_license(user_id, name, new_license_key)
 
 async def update_user_name(user_id: int, new_name: str):
     async with aiosqlite.connect(DB_PATH) as db:
@@ -169,6 +249,7 @@ async def update_user_name(user_id: int, new_name: str):
 
 # --- توابع کانال مبدأ ---
 async def add_subscription(user_id: int, channel_id: int, title: str, username: str = None):
+    user_id = await get_owner(user_id)
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("INSERT OR REPLACE INTO subscriptions (user_id, channel_id, channel_title, channel_username) VALUES (?, ?, ?, ?)", (user_id, channel_id, title, username))
         await db.commit()
@@ -185,12 +266,14 @@ async def get_subscribers(channel_id: int):
             return [row[0] for row in await cursor.fetchall()]
 
 async def get_channel_title(user_id: int, channel_id: int):
+    user_id = await get_owner(user_id)
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("SELECT channel_title FROM subscriptions WHERE user_id = ? AND channel_id = ?", (user_id, channel_id)) as cursor:
             row = await cursor.fetchone()
             return row[0] if row else "نامشخص"
 
 async def get_user_subscriptions(user_id: int):
+    user_id = await get_owner(user_id)
     async with aiosqlite.connect(DB_PATH) as db:
         try:
             async with db.execute("SELECT channel_id, channel_title, channel_username FROM subscriptions WHERE user_id = ?", (user_id,)) as cursor:
@@ -201,6 +284,7 @@ async def get_user_subscriptions(user_id: int):
                 return [(row[0], row[1], None) for row in rows]
 
 async def delete_subscription_by_id(user_id: int, channel_id: str):
+    user_id = await get_owner(user_id)
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("DELETE FROM mappings WHERE user_id = ? AND source_id = ?", (user_id, str(channel_id)))
         await db.execute("DELETE FROM subscriptions WHERE user_id = ? AND CAST(channel_id AS TEXT) = ?", (user_id, channel_id))
@@ -208,32 +292,38 @@ async def delete_subscription_by_id(user_id: int, channel_id: str):
 
 # --- توابع حذف کلمات ---
 async def add_remove_word(user_id: int, word: str):
+    user_id = await get_owner(user_id)
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("INSERT OR IGNORE INTO remove_words (user_id, word) VALUES (?, ?)", (user_id, word))
         await db.commit()
 
 async def get_remove_words(user_id: int):
+    user_id = await get_owner(user_id)
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("SELECT word FROM remove_words WHERE user_id = ?", (user_id,)) as cursor:
             return [row[0] for row in await cursor.fetchall()]
 
 # --- توابع کانال مقصد ---
 async def add_target(user_id: int, channel_id: str, append_text: str):
+    user_id = await get_owner(user_id)
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("INSERT OR REPLACE INTO targets (user_id, channel_id, append_text) VALUES (?, ?, ?)", (user_id, channel_id, append_text))
         await db.commit()
 
 async def get_targets(user_id: int):
+    user_id = await get_owner(user_id)
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("SELECT channel_id, append_text FROM targets WHERE user_id = ?", (user_id,)) as cursor:
             return await cursor.fetchall()
 
 async def get_target_by_id(user_id: int, channel_id: str):
+    user_id = await get_owner(user_id)
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("SELECT channel_id, append_text FROM targets WHERE user_id = ? AND channel_id = ?", (user_id, channel_id)) as cursor:
             return await cursor.fetchone()
 
 async def delete_target(user_id: int, channel_id: str):
+    user_id = await get_owner(user_id)
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("DELETE FROM targets WHERE user_id = ? AND channel_id = ?", (user_id, channel_id))
         await db.execute("DELETE FROM mappings WHERE user_id = ? AND target_id = ?", (user_id, channel_id))
@@ -241,6 +331,7 @@ async def delete_target(user_id: int, channel_id: str):
 
 # --- توابع نگاشت کانال‌ها ---
 async def set_mapping(user_id: int, source_id: str, target_id: str, mode: str):
+    user_id = await get_owner(user_id)
     async with aiosqlite.connect(DB_PATH) as db:
         if mode == 'none':
             await db.execute("DELETE FROM mappings WHERE user_id = ? AND source_id = ? AND target_id = ?", (user_id, source_id, target_id))
@@ -249,6 +340,7 @@ async def set_mapping(user_id: int, source_id: str, target_id: str, mode: str):
         await db.commit()
 
 async def get_mappings(user_id: int, source_id: str):
+    user_id = await get_owner(user_id)
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("SELECT target_id, mode FROM mappings WHERE user_id = ? AND source_id = ?", (user_id, str(source_id))) as cursor:
             return await cursor.fetchall()
@@ -294,6 +386,7 @@ async def cleanup_cache():
         await db.commit()
         
 async def delete_remove_word(user_id: int, word: str):
+    user_id = await get_owner(user_id)
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("DELETE FROM remove_words WHERE user_id = ? AND word = ?", (user_id, word))
         await db.commit()
@@ -350,16 +443,19 @@ async def reset_daily_stats():
 
 # --- توابع کانال مقصد بله ---
 async def add_bale_target(user_id: int, channel_id: str, append_text: str):
+    user_id = await get_owner(user_id)
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("INSERT OR REPLACE INTO bale_targets (user_id, channel_id, append_text) VALUES (?, ?, ?)", (user_id, channel_id, append_text))
         await db.commit()
 
 async def get_bale_targets(user_id: int):
+    user_id = await get_owner(user_id)
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("SELECT channel_id, append_text FROM bale_targets WHERE user_id = ?", (user_id,)) as cursor:
             return await cursor.fetchall()
 
 async def delete_bale_target(user_id: int, channel_id: str):
+    user_id = await get_owner(user_id)
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("DELETE FROM bale_targets WHERE user_id = ? AND channel_id = ?", (user_id, channel_id))
         await db.commit()

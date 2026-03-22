@@ -7,7 +7,6 @@ temp_downloads/
 anon.session
 bot_data.db
 bot_logs.log
-icon1.png
 proxy_config.json
 setup_server.sh
 TelegramForwarderBot.spec
