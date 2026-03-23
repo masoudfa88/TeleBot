@@ -9,7 +9,9 @@ from dotenv import load_dotenv
 from telegram import InputMediaPhoto, InputMediaVideo, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.error import TelegramError
 from core import bot, LOGGER
-from database import get_subscribers, get_remove_words, get_channel_title, ALBUM_CAPTIONS, get_mappings, get_target_by_id, get_bale_targets
+from database import get_subscribers, get_remove_words, get_channel_title, ALBUM_CAPTIONS, get_mappings
+from database import init_cache_table, add_to_cache, get_recent_cache, cleanup_cache
+from database import get_target_by_id, get_bale_targets, get_eitaa_targets, increment_stat
 import sys
 import json
 import re
@@ -18,10 +20,8 @@ import io
 from PIL import Image
 import imagehash
 from thefuzz import fuzz
-from database import init_cache_table, add_to_cache, get_recent_cache, cleanup_cache
 from bale_sender import send_to_bale, send_album_to_bale
-from database import increment_stat
-from eitaa_sender import send_to_eitaa, send_album_to_eitaa
+from eitaa_sender import send_to_eitaa, send_album_to_eitaa, get_driver as get_eitaa_driver
 
 def resource_path(relative_path):
     try:
@@ -310,7 +310,6 @@ async def process_single_message_task(msg, bot_api_from_chat_id, subscribers, al
         mappings = await get_mappings(user_id, str(bot_api_from_chat_id))
         if not mappings: continue
             
-        # ۱. فیلتر کلمات حذفی بر اساس تنظیمات این کاربر خاص
         clean_text_filtered = await apply_filters(clean_text, user_id)
         norm_text_for_cache = normalize_text(clean_text_filtered)
         ch_title = await get_channel_title(user_id, bot_api_from_chat_id)
@@ -319,12 +318,10 @@ async def process_single_message_task(msg, bot_api_from_chat_id, subscribers, al
         manual_targets = [m[0] for m in mappings if m[1] == 'manual']
         
         for tgt in auto_targets:
-            # ۲. بررسی تکراری بودن روی متن فیلتر شده و منحصراً برای همین کانال مقصد
             if await check_target_duplicate(tgt, clean_text_filtered, unique_id, current_phash_str):
-                LOGGER.info(f"🚫 مسدود شد (تکراری در کانال مقصد {tgt}) | '{get_preview(clean_text_filtered)}'")
+                LOGGER.info(f"🚫 مسدود شد (تکراری در تلگرام {tgt}) | '{get_preview(clean_text_filtered)}'")
                 continue
             
-            # ۳. دانلود مدیا فقط در صورتی که حداقل یک کانال مقصد به آن نیاز داشته باشد
             if msg.media and not DIRECT_COPY and not media_downloaded:
                 try:
                     file_path = await client.download_media(msg, file=os.path.join(TEMP_DIR, f"single_{bot_api_from_chat_id}_{msg.id}"))
@@ -342,15 +339,12 @@ async def process_single_message_task(msg, bot_api_from_chat_id, subscribers, al
             final_auto_text = f"{clean_text_filtered}\n\n{app_text}" if clean_text_filtered else app_text
             
             all_send_tasks.append(track_task(send_tg_single_with_retry(tgt, file_path, file_type, final_auto_text, msg), user_id, str(bot_api_from_chat_id), 'tg_sent_count'))
-            
-            # ۴. ثبت در کش اختصاصی همین مقصد
             await add_to_cache(str(tgt), unique_id, current_phash_str, norm_text_for_cache)
 
             # --- ارسال به مقصدهای بله ---
-            if auto_targets: # فقط در صورتی که این مبدأ برای کاربر فعال باشد
+            if auto_targets: 
                 bale_targets = await get_bale_targets(user_id)
                 for bale_tgt, bale_app_text in bale_targets:
-                    # استفاده از کلید کش متفاوت (پیشوند bale_) تا با تلگرام تداخل نکند
                     if await check_target_duplicate(f"bale_{bale_tgt}", clean_text_filtered, unique_id, current_phash_str):
                         LOGGER.info(f"🚫 مسدود شد (تکراری در بله {bale_tgt}) | '{get_preview(clean_text_filtered)}'")
                         continue
@@ -368,14 +362,32 @@ async def process_single_message_task(msg, bot_api_from_chat_id, subscribers, al
     
                     final_bale_text = f"{clean_text_filtered}\n\n{bale_app_text}" if clean_text_filtered else bale_app_text
                     fname = msg.file.name if hasattr(msg, 'file') and msg.file else None
-                    
                     all_send_tasks.append(track_task(send_to_bale(text=final_bale_text, file_path=file_path, file_type=file_type, filename=fname, chat_id=bale_tgt), user_id, str(bot_api_from_chat_id), 'bale_sent_count'))
-                    
                     await add_to_cache(f"bale_{bale_tgt}", unique_id, current_phash_str, norm_text_for_cache)
-            # if not eitaa_sent:
-            #     fname = msg.file.name if hasattr(msg, 'file') and msg.file else None
-            #     all_send_tasks.append(track_task(send_to_eitaa(text=final_auto_text, file_path=file_path, file_type=file_type, filename=fname), user_id, str(bot_api_from_chat_id), 'eitaa_sent_count'))
-            #     eitaa_sent = True
+                    
+            # --- ارسال به مقصدهای ایتا ---
+            if auto_targets:
+                eitaa_targets = await get_eitaa_targets(user_id)
+                for eitaa_tgt, eitaa_app_text in eitaa_targets:
+                    if await check_target_duplicate(f"eitaa_{eitaa_tgt}", clean_text_filtered, unique_id, current_phash_str):
+                        LOGGER.info(f"🚫 مسدود شد (تکراری در ایتا {eitaa_tgt}) | '{get_preview(clean_text_filtered)}'")
+                        continue
+                    
+                    if msg.media and not DIRECT_COPY and not media_downloaded:
+                        try:
+                            file_path = await client.download_media(msg, file=os.path.join(TEMP_DIR, f"single_{bot_api_from_chat_id}_{msg.id}"))
+                            if msg.photo: file_type = 'photo'
+                            elif msg.video: file_type = 'video'
+                            elif msg.audio: file_type = 'audio'
+                            elif msg.document: file_type = 'document'
+                            media_downloaded = True
+                        except Exception as e:
+                            LOGGER.error(f"❌ خطا در دانلود فایل تکی برای ایتا: {e}")
+    
+                    final_eitaa_text = f"{clean_text_filtered}\n\n{eitaa_app_text}" if clean_text_filtered else eitaa_app_text
+                    fname = msg.file.name if hasattr(msg, 'file') and msg.file else None
+                    all_send_tasks.append(track_task(send_to_eitaa(text=final_eitaa_text, file_path=file_path, file_type=file_type, filename=fname, chat_id=eitaa_tgt), user_id, str(bot_api_from_chat_id), 'eitaa_sent_count'))
+                    await add_to_cache(f"eitaa_{eitaa_tgt}", unique_id, current_phash_str, norm_text_for_cache)
 
         if manual_targets:
             if msg.media and not DIRECT_COPY and not media_downloaded:
@@ -452,12 +464,10 @@ async def process_album_task(album_msgs, bot_api_from_chat_id, subscribers, all_
         manual_targets = [m[0] for m in mappings if m[1] == 'manual']
 
         for tgt in auto_targets:
-            # بررسی تکراری بودن روی کپشن فیلتر شده و برای همین کانال مقصد
             if await check_target_duplicate(tgt, clean_caption, unique_id, current_phash_str):
-                LOGGER.info(f"🚫 مسدود شد آلبوم (تکراری در کانال مقصد {tgt}) | '{get_preview(clean_caption)}'")
+                LOGGER.info(f"🚫 مسدود شد آلبوم (تکراری در تلگرام {tgt}) | '{get_preview(clean_caption)}'")
                 continue
 
-            # دانلود مدیاها در صورت نیاز
             if not DIRECT_COPY and not media_downloaded:
                 for m in album_msgs:
                     try:
@@ -498,14 +508,34 @@ async def process_album_task(album_msgs, bot_api_from_chat_id, subscribers, all_
     
                     final_bale_caption = f"{clean_caption}\n\n{bale_app_text}" if clean_caption else bale_app_text
                     bale_media_items = [{'type': 'photo' if item["msg"].photo else 'video', 'path': item["path"], 'caption': final_bale_caption if i == 0 else None} for i, item in enumerate(downloaded_files)]
-                    
                     all_send_tasks.append(track_task(send_album_to_bale(bale_media_items, chat_id=bale_tgt), user_id, str(bot_api_from_chat_id), 'bale_sent_count'))
-                    
                     await add_to_cache(f"bale_{bale_tgt}", unique_id, current_phash_str, norm_text_for_cache)
-            # if not eitaa_sent:
-            #     eitaa_media_items = [{'path': item["path"], 'caption': final_auto_caption if i == 0 else None} for i, item in enumerate(downloaded_files)]
-            #     all_send_tasks.append(track_task(send_album_to_eitaa(eitaa_media_items), user_id, str(bot_api_from_chat_id), 'eitaa_sent_count'))
-            #     eitaa_sent = True
+                    
+            # --- ارسال به مقصدهای ایتا ---
+            if auto_targets:
+                eitaa_targets = await get_eitaa_targets(user_id)
+                for eitaa_tgt, eitaa_app_text in eitaa_targets:
+                    if await check_target_duplicate(f"eitaa_{eitaa_tgt}", clean_caption, unique_id, current_phash_str):
+                        LOGGER.info(f"🚫 مسدود شد آلبوم (تکراری در ایتا {eitaa_tgt}) | '{get_preview(clean_caption)}'")
+                        continue
+                    
+                    if not DIRECT_COPY and not media_downloaded:
+                        for m in album_msgs:
+                            try:
+                                path = await client.download_media(m, file=os.path.join(TEMP_DIR, f"album_{bot_api_from_chat_id}_{m.grouped_id}_{m.id}"))
+                                if path: downloaded_files.append({"msg": m, "path": path})
+                            except Exception as e:
+                                LOGGER.error(f"❌ خطا در دانلود دیتای آلبوم ایتا: {e}")
+                        media_downloaded = True
+                    
+                    if not downloaded_files and not DIRECT_COPY: continue
+    
+                    final_eitaa_caption = f"{clean_caption}\n\n{eitaa_app_text}" if clean_caption else eitaa_app_text
+                    # تبدیل فرمت فایل‌ها برای تابع جدید ایتا
+                    eitaa_media_items = [{'type': 'photo' if item["msg"].photo else 'video', 'path': item["path"], 'caption': final_eitaa_caption if i == 0 else None} for i, item in enumerate(downloaded_files)]
+                    
+                    all_send_tasks.append(track_task(send_album_to_eitaa(eitaa_media_items, chat_id=eitaa_tgt), user_id, str(bot_api_from_chat_id), 'eitaa_sent_count'))
+                    await add_to_cache(f"eitaa_{eitaa_tgt}", unique_id, current_phash_str, norm_text_for_cache)
         
         if manual_targets:
             if not DIRECT_COPY and not media_downloaded:
@@ -619,6 +649,14 @@ async def main():
     except Exception as e:
         LOGGER.error(f"❌ Account connection failed! Check proxy. Error: {e}")
         return 
+
+    # 🚀 باز کردن و آماده‌سازی سلنیوم ایتا در ابتدای اجرای ربات 
+    try:
+        LOGGER.info("🌐 [Eitaa] در حال راه‌اندازی مرورگر ایتا در پس‌زمینه... (این کار ممکن است چند ثانیه طول بکشد)")
+        # اجرای سلنیوم در ترد مجزا تا روند اصلی متوقف نشود
+        await asyncio.to_thread(get_eitaa_driver) 
+    except Exception as e:
+        LOGGER.error(f"❌ [Eitaa] خطا در راه‌اندازی اولیه مرورگر ایتا: {e}")
 
     async def polling_loop():
         LOGGER.info("🔄 سیستم هوشمند بررسی دوره‌ای پیام‌های سین‌نخورده فعال شد...")

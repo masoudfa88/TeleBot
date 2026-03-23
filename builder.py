@@ -8,7 +8,6 @@ def build_gui():
     separator = ";" if sys.platform == "win32" else ":"
     base_dir = os.path.abspath(os.path.dirname(__file__))
     
-    # استفاده از مسیرهای مطلق برای جلوگیری از خطاهای مسیردهی
     icon_path = os.path.join(base_dir, "icon1.png")
     env_path = os.path.join(base_dir, ".env")
     script_path = os.path.join(base_dir, "gui_app.py")
@@ -18,6 +17,7 @@ def build_gui():
         "--noconfirm",
         "--onefile",
         "--windowed",
+        "--collect-all", "selenium",  # 👈 این خط اضافه شد تا سلنیوم جا نماند
         "--name", "TelegramForwarderBot"
     ]
 
@@ -33,10 +33,8 @@ def build_gui():
     else:
         print("⚠️ Warning: .env not found. Building without it.")
 
-    # این خط حیاتی است و نام فایل اصلی را به PyInstaller می‌دهد
     cmd.append(script_path)
     
-    # اجرای دستور و بررسی نتیجه
     result = subprocess.run(cmd)
     
     if result.returncode == 0:

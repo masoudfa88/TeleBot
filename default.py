@@ -18,15 +18,23 @@ ADMIN_ID = OWNER_ID
  ASK_NAME, ASK_LICENSE, WAITING_FOR_EDIT, 
  TYPING_DELETE_TARGET, TYPING_NEW_NAME, TYPING_CHANGE_LICENSE, TYPING_EDIT_SIGNATURE,
  TYPING_BALE_TARGET, TYPING_BALE_APPEND, TYPING_DELETE_BALE, TYPING_EDIT_BALE_SIG,
+ TYPING_EITAA_TARGET, TYPING_EITAA_APPEND, TYPING_DELETE_EITAA, TYPING_EDIT_EITAA_SIG, # 👈 ایتا اضافه شد
  ASK_MAX_USERS, ASK_MAX_SOURCES, ASK_MAX_TARGETS,
- EDIT_LIC_USERS, EDIT_LIC_SOURCES, EDIT_LIC_TARGETS) = range(22)
+ EDIT_LIC_USERS, EDIT_LIC_SOURCES, EDIT_LIC_TARGETS) = range(26)
 
 # --- توابع کیبوردهای داینامیک ---
 def get_main_keyboard(user_id):
-    keys = [["📥 کانال مبدأ"], ["📤 کانال مقصد تلگرام", "🟢 کانال مقصد بله"], ["👤 ویرایش پروفایل"]]
+    # ایتا به کیبورد اصلی اضافه شد
+    keys = [["📥 کانال مبدأ"], ["📤 کانال مقصد تلگرام", "🟢 کانال مقصد بله"], ["🟠 کانال مقصد ایتا", "👤 ویرایش پروفایل"]]
     if user_id == ADMIN_ID:
         keys.append(["👑 پنل مدیریت (ویژه ادمین)"])
     return ReplyKeyboardMarkup(keys, resize_keyboard=True)
+
+eitaa_keyboard = ReplyKeyboardMarkup([
+    ["🎯 فهرست مقصدهای ایتا"],
+    ["➕ افزودن مقصد ایتا", "🗑 حذف مقصد ایتا"],
+    ["بازگشت به منوی اصلی 🔙"]
+], resize_keyboard=True)
 
 source_keyboard = ReplyKeyboardMarkup([
     ["📋 فهرست کانال‌های مبدأ"],
@@ -147,6 +155,9 @@ async def handle_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text == "🟢 کانال مقصد بله":
         await update.message.reply_text("تنظیمات کانال‌های مقصد بله:", reply_markup=bale_keyboard)
         return CHOOSING
+    elif text == "🟠 کانال مقصد ایتا":
+        await update.message.reply_text("تنظیمات کانال‌های مقصد ایتا:", reply_markup=eitaa_keyboard)
+        return CHOOSING
     elif text == "👤 ویرایش پروفایل":
         await update.message.reply_text("بخش پروفایل:", reply_markup=profile_keyboard)
         return CHOOSING
@@ -196,6 +207,29 @@ async def handle_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 keyboard = [[InlineKeyboardButton("🗑 حذف این کلمه", callback_data="delword_action")]]
                 await update.message.reply_text(text=w, reply_markup=InlineKeyboardMarkup(keyboard))
         return CHOOSING
+    # --- دکمه‌های کانال مقصد ایتا ---
+    elif text == "🎯 فهرست مقصدهای ایتا":
+        targets = await get_eitaa_targets(user_id)
+        if not targets:
+            await update.message.reply_text("⚠️ شما هنوز کانال مقصد ایتا تنظیم نکرده‌اید!", reply_markup=eitaa_keyboard)
+        else:
+            await update.message.reply_text("🎯 کانال‌های مقصد ایتا شما:", reply_markup=eitaa_keyboard)
+            for ch_id, app_text in targets:
+                msg = f"🔸 آیدی ایتا: {ch_id}\n📝 متن امضا:\n{app_text}"
+                markup = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("✏️ ویرایش امضا", callback_data=f"editeitaasig_{ch_id}")],
+                    [InlineKeyboardButton("🗑 حذف کانال ایتا", callback_data=f"deleitaatgt_{ch_id}")]
+                ])
+                await update.message.reply_text(msg, reply_markup=markup)
+        return CHOOSING
+
+    elif text == "➕ افزودن مقصد ایتا":
+        await update.message.reply_text("آیدی یا شناسه کانال ایتا خودت رو بفرست:", reply_markup=cancel_keyboard)
+        return TYPING_EITAA_TARGET
+
+    elif text == "🗑 حذف مقصد ایتا":
+        await update.message.reply_text("برای حذف مقصد ایتا، شناسه آن را بفرستید:", reply_markup=cancel_keyboard)
+        return TYPING_DELETE_EITAA
 # --- دکمه‌های کانال مقصد بله ---
     elif text == "🎯 فهرست مقصدهای بله":
         targets = await get_bale_targets(user_id)
@@ -392,6 +426,50 @@ async def receive_target_channel(update: Update, context: ContextTypes.DEFAULT_T
     context.user_data['temp_target'] = text
     await update.message.reply_text("✅ حالا متنی که می‌خوای به انتهای پیام‌ها اضافه بشه رو بفرست:\n(برای لغو «بازگشت 🔙» را بزن)", reply_markup=cancel_keyboard)
     return TYPING_APPEND_TEXT
+
+async def receive_eitaa_target(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    if text == "بازگشت 🔙":
+        await update.message.reply_text("لغو شد.", reply_markup=eitaa_keyboard)
+        return CHOOSING
+    
+    owner_id = await get_owner(update.effective_user.id)
+    if not await check_target_limit(owner_id):
+        await update.message.reply_text("❌ سقف مجاز پر شده است!", reply_markup=eitaa_keyboard)
+        return CHOOSING
+
+    context.user_data['temp_eitaa_target'] = text
+    await update.message.reply_text("✅ حالا متنی که می‌خوای به انتهای پیام‌ها تو ایتا اضافه بشه رو بفرست:\n(برای لغو «بازگشت 🔙» را بزن)", reply_markup=cancel_keyboard)
+    return TYPING_EITAA_APPEND
+
+async def receive_eitaa_append(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.text == "بازگشت 🔙":
+        await update.message.reply_text("لغو شد.", reply_markup=eitaa_keyboard)
+        return CHOOSING
+    await add_eitaa_target(update.effective_user.id, context.user_data['temp_eitaa_target'], update.message.text)
+    await update.message.reply_text("✅ کانال مقصد ایتا و امضا ذخیره شد!", reply_markup=eitaa_keyboard)
+    return CHOOSING
+
+async def receive_delete_eitaa(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    if text == "بازگشت 🔙":
+        await update.message.reply_text("لغو شد.", reply_markup=eitaa_keyboard)
+        return CHOOSING
+    await delete_eitaa_target(update.effective_user.id, text.strip())
+    await update.message.reply_text("✅ در صورتی که کانال در لیست مقصدها بود، حذف شد.", reply_markup=eitaa_keyboard)
+    return CHOOSING
+
+async def receive_edit_eitaa_signature(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    user_id = update.effective_user.id
+    if text == "بازگشت 🔙":
+        await update.message.reply_text("عملیات لغو شد.", reply_markup=eitaa_keyboard)
+        return CHOOSING
+    ch_id = context.user_data.get('edit_sig_eitaa_target')
+    if ch_id:
+        await add_eitaa_target(user_id, ch_id, text)
+        await update.message.reply_text("✅ امضا با موفقیت به‌روزرسانی شد!", reply_markup=eitaa_keyboard)
+    return CHOOSING
 
 async def receive_bale_target(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
@@ -758,6 +836,19 @@ async def target_inline_callback(update: Update, context: ContextTypes.DEFAULT_T
         await query.answer()
         await query.message.reply_text(f"✏️ لطفا امضای جدید برای کانال بله `{ch_id}` را بفرستید:\n(برای انصراف «بازگشت 🔙» را بزنید)", reply_markup=cancel_keyboard, parse_mode='Markdown')
         return TYPING_EDIT_BALE_SIG
+    elif data.startswith("editeitaasig_"):
+        ch_id = data.split("_")[1]
+        context.user_data['edit_sig_eitaa_target'] = ch_id
+        await query.answer()
+        await query.message.reply_text(f"✏️ لطفا امضای جدید برای کانال ایتا `{ch_id}` را بفرستید:\n(برای انصراف «بازگشت 🔙» را بزنید)", reply_markup=cancel_keyboard, parse_mode='Markdown')
+        return TYPING_EDIT_EITAA_SIG
+        
+    elif data.startswith("deleitaatgt_"):
+        ch_id = data.split("_")[1]
+        await delete_eitaa_target(user_id, ch_id)
+        await query.answer("✅ کانال مقصد ایتا حذف شد.")
+        await query.message.delete()
+        return CHOOSING
         
     elif data.startswith("delbaletgt_"):
         ch_id = data.split("_")[1]
@@ -891,6 +982,10 @@ conv_handler = ConversationHandler(
         TYPING_BALE_APPEND: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_bale_append)],
         TYPING_DELETE_BALE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_delete_bale)],
         TYPING_EDIT_BALE_SIG: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_edit_bale_signature)],
+        TYPING_EITAA_TARGET: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_eitaa_target)],
+        TYPING_EITAA_APPEND: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_eitaa_append)],
+        TYPING_DELETE_EITAA: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_delete_eitaa)],
+        TYPING_EDIT_EITAA_SIG: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_edit_eitaa_signature)],
         ASK_MAX_USERS: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_max_users)],
         ASK_MAX_SOURCES: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_max_sources)],
         ASK_MAX_TARGETS: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_max_targets)],

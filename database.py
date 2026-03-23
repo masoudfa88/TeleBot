@@ -23,6 +23,14 @@ async def init_db():
             )
         """)
         await db.execute("""
+            CREATE TABLE IF NOT EXISTS eitaa_targets (
+                user_id INTEGER,
+                channel_id TEXT,
+                append_text TEXT,
+                UNIQUE(user_id, channel_id)
+            )
+        """)
+        await db.execute("""
             CREATE TABLE IF NOT EXISTS licenses (
                 license_key TEXT PRIMARY KEY,
                 is_used BOOLEAN DEFAULT 0,
@@ -221,7 +229,9 @@ async def check_target_limit(owner_id: int):
             t1 = (await c1.fetchone())[0]
         async with db.execute("SELECT COUNT(*) FROM bale_targets WHERE user_id = ?", (owner_id,)) as c2:
             t2 = (await c2.fetchone())[0]
-    return (t1 + t2) < limits[1]
+        async with db.execute("SELECT COUNT(*) FROM eitaa_targets WHERE user_id = ?", (owner_id,)) as c3:
+            t3 = (await c3.fetchone())[0]
+    return (t1 + t2 + t3) < limits[1]
 
 async def delete_license(license_key: str):
     async with aiosqlite.connect(DB_PATH) as db:
@@ -458,4 +468,23 @@ async def delete_bale_target(user_id: int, channel_id: str):
     user_id = await get_owner(user_id)
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("DELETE FROM bale_targets WHERE user_id = ? AND channel_id = ?", (user_id, channel_id))
+        await db.commit()
+        
+# --- توابع کانال مقصد ایتا ---
+async def add_eitaa_target(user_id: int, channel_id: str, append_text: str):
+    user_id = await get_owner(user_id)
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("INSERT OR REPLACE INTO eitaa_targets (user_id, channel_id, append_text) VALUES (?, ?, ?)", (user_id, channel_id, append_text))
+        await db.commit()
+
+async def get_eitaa_targets(user_id: int):
+    user_id = await get_owner(user_id)
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT channel_id, append_text FROM eitaa_targets WHERE user_id = ?", (user_id,)) as cursor:
+            return await cursor.fetchall()
+
+async def delete_eitaa_target(user_id: int, channel_id: str):
+    user_id = await get_owner(user_id)
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM eitaa_targets WHERE user_id = ? AND channel_id = ?", (user_id, channel_id))
         await db.commit()
