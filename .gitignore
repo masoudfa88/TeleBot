@@ -2,6 +2,7 @@ __pycache__/
 build/
 dist/
 temp_downloads/
+eitaa_test_profile/
 
 .env
 anon.session
@@ -10,3 +11,4 @@ bot_logs.log
 proxy_config.json
 setup_server.sh
 TelegramForwarderBot.spec
+test_eitaa.spec
