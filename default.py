@@ -13,14 +13,14 @@ ADMIN_ID = OWNER_ID
 
 # ADMIN_ID = 53718944
 
-(CHOOSING, TYPING_ADD_CHANNEL, TYPING_REMOVE_WORDS, 
+(CHOOSING, TYPING_ADD_CHANNEL, TYPING_REMOVE_WORDS, TYPING_FORBIDDEN_WORDS,
  TYPING_TARGET_CHANNEL, TYPING_APPEND_TEXT, 
  ASK_NAME, ASK_LICENSE, WAITING_FOR_EDIT, 
  TYPING_DELETE_TARGET, TYPING_NEW_NAME, TYPING_CHANGE_LICENSE, TYPING_EDIT_SIGNATURE,
  TYPING_BALE_TARGET, TYPING_BALE_APPEND, TYPING_DELETE_BALE, TYPING_EDIT_BALE_SIG,
- TYPING_EITAA_TARGET, TYPING_EITAA_APPEND, TYPING_DELETE_EITAA, TYPING_EDIT_EITAA_SIG, # 👈 ایتا اضافه شد
+ TYPING_EITAA_TARGET, TYPING_EITAA_APPEND, TYPING_DELETE_EITAA, TYPING_EDIT_EITAA_SIG, 
  ASK_MAX_USERS, ASK_MAX_SOURCES, ASK_MAX_TARGETS,
- EDIT_LIC_USERS, EDIT_LIC_SOURCES, EDIT_LIC_TARGETS) = range(26)
+ EDIT_LIC_USERS, EDIT_LIC_SOURCES, EDIT_LIC_TARGETS) = range(27)
 
 # --- توابع کیبوردهای داینامیک ---
 def get_main_keyboard(user_id):
@@ -40,6 +40,7 @@ source_keyboard = ReplyKeyboardMarkup([
     ["📋 فهرست کانال‌های مبدأ"],
     ["➕ افزودن کانال مبدأ"],
     ["🚫 تعریف کلمات حذفی", "🗑 فهرست کلمات حذفی"],
+    ["⛔️ تعریف کلمات ممنوعه", "🗑 فهرست کلمات ممنوعه"],
     ["بازگشت به منوی اصلی 🔙"]
 ], resize_keyboard=True)
 
@@ -207,6 +208,21 @@ async def handle_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 keyboard = [[InlineKeyboardButton("🗑 حذف این کلمه", callback_data="delword_action")]]
                 await update.message.reply_text(text=w, reply_markup=InlineKeyboardMarkup(keyboard))
         return CHOOSING
+    elif text == "⛔️ تعریف کلمات ممنوعه":
+        await update.message.reply_text("کلمه‌ای که اگر در پیام بود کل پیام منتشر نشود را بفرستید:\n(برای خروج «بازگشت 🔙» رو بزن)", reply_markup=cancel_keyboard)
+        return TYPING_FORBIDDEN_WORDS
+
+    elif text == "🗑 فهرست کلمات ممنوعه":
+        from database import get_forbidden_words
+        words = await get_forbidden_words(user_id)
+        if not words:
+            await update.message.reply_text("هیچ کلمه ممنوعه‌ای در لیست شما وجود ندارد.", reply_markup=source_keyboard)
+        else:
+            await update.message.reply_text("⛔️ فهرست کلمات ممنوعه شما:")
+            for w in words:
+                keyboard = [[InlineKeyboardButton("🗑 حذف این کلمه", callback_data="delforbid_action")]]
+                await update.message.reply_text(text=w, reply_markup=InlineKeyboardMarkup(keyboard))
+        return CHOOSING
     # --- دکمه‌های کانال مقصد ایتا ---
     elif text == "🎯 فهرست مقصدهای ایتا":
         targets = await get_eitaa_targets(user_id)
@@ -272,7 +288,7 @@ async def handle_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return CHOOSING
 
     elif text == "➕ افزودن کانال مقصد":
-        await update.message.reply_text("آیدی کانال شخصی خودت رو بفرست (ربات باید ادمین اونجا باشه):", reply_markup=cancel_keyboard)
+        await update.message.reply_text("آیدی کانال شخصی خودت رو بفرست (ربات @groupmanager2026_bot ادمین اونجا باشه):", reply_markup=cancel_keyboard)
         return TYPING_TARGET_CHANNEL
 
     elif text == "🗑 حذف کانال مقصد":
@@ -447,7 +463,7 @@ async def receive_eitaa_append(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text("لغو شد.", reply_markup=eitaa_keyboard)
         return CHOOSING
     await add_eitaa_target(update.effective_user.id, context.user_data['temp_eitaa_target'], update.message.text)
-    await update.message.reply_text("✅ کانال مقصد ایتا و امضا ذخیره شد!", reply_markup=eitaa_keyboard)
+    await update.message.reply_text("✅ کانال مقصد ایتا و امضا ذخیره شد. توجه داشته باشید حتما باید اکانت @masoudfa88 به عنوان مدیر کانال تعریف شده باشد!", reply_markup=eitaa_keyboard)
     return CHOOSING
 
 async def receive_delete_eitaa(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -520,7 +536,7 @@ async def receive_bale_append(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text("لغو شد.", reply_markup=bale_keyboard)
         return CHOOSING
     await add_bale_target(update.effective_user.id, context.user_data['temp_bale_target'], update.message.text)
-    await update.message.reply_text("✅ کانال مقصد بله و امضا ذخیره شد!", reply_markup=bale_keyboard)
+    await update.message.reply_text("✅ کانال مقصد بله و امضا ذخیره شد. توجه داشته باشید ربات @channelmanager2026_bot را حتما به عنوان مدیر کانال تعریف نمایید.!", reply_markup=bale_keyboard)
     return CHOOSING
 
 async def receive_delete_bale(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -561,7 +577,13 @@ async def inline_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "ignore":
         await query.answer()
         return
-
+    if data == "delforbid_action":
+        from database import delete_forbidden_word
+        word_to_delete = query.message.text
+        await delete_forbidden_word(user_id, word_to_delete)
+        await query.answer("✅ کلمه ممنوعه حذف شد.")
+        await query.edit_message_text(f"✅ کلمه ممنوعه زیر حذف شد:\n\n{word_to_delete}")
+        return
     if data.startswith("delsrc_"):
         ch_id = data.split("_")[1]
         await delete_subscription_by_id(user_id, ch_id)
@@ -910,6 +932,16 @@ async def admin_inline_callback(update: Update, context: ContextTypes.DEFAULT_TY
                 except: pass
         return CHOOSING
 
+async def receive_forbidden_words(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    if text == "بازگشت 🔙":
+        await update.message.reply_text("✅ خروج از بخش کلمات ممنوعه.", reply_markup=source_keyboard)
+        return CHOOSING
+    from database import add_forbidden_word
+    await add_forbidden_word(update.effective_user.id, text)
+    await update.message.reply_text(f"⛔️ کلمه «{text}» به لیست ممنوعه اضافه شد. کلمه بعدی را بفرستید یا برگردید:", reply_markup=cancel_keyboard)
+    return TYPING_FORBIDDEN_WORDS
+
 # توابع دریافت مقادیر ویرایش
 async def receive_edit_lic_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
@@ -964,7 +996,7 @@ conv_handler = ConversationHandler(
     states={
         CHOOSING: [
             MessageHandler(filters.TEXT & ~filters.COMMAND, handle_choice),
-            CallbackQueryHandler(target_inline_callback, pattern="^(editsig_|deltgt_)"),
+            CallbackQueryHandler(target_inline_callback, pattern="^(editsig_|deltgt_|editbalesig_|delbaletgt_|editeitaasig_|deleitaatgt_)"),
             CallbackQueryHandler(admin_inline_callback, pattern="^(editlic_|dellic_)")
         ],
         ASK_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_name)],
@@ -986,6 +1018,7 @@ conv_handler = ConversationHandler(
         TYPING_EITAA_APPEND: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_eitaa_append)],
         TYPING_DELETE_EITAA: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_delete_eitaa)],
         TYPING_EDIT_EITAA_SIG: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_edit_eitaa_signature)],
+        TYPING_FORBIDDEN_WORDS: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_forbidden_words)],
         ASK_MAX_USERS: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_max_users)],
         ASK_MAX_SOURCES: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_max_sources)],
         ASK_MAX_TARGETS: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_max_targets)],

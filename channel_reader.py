@@ -10,7 +10,7 @@ from telegram import InputMediaPhoto, InputMediaVideo, InlineKeyboardMarkup, Inl
 from telegram.error import TelegramError
 from core import bot, LOGGER
 from database import get_subscribers, get_remove_words, get_channel_title, ALBUM_CAPTIONS, get_mappings
-from database import init_cache_table, add_to_cache, get_recent_cache, cleanup_cache
+from database import init_cache_table, add_to_cache, get_recent_cache, cleanup_cache, get_forbidden_words
 from database import get_target_by_id, get_bale_targets, get_eitaa_targets, increment_stat
 import sys
 import json
@@ -213,21 +213,27 @@ async def send_tg_manual_single_with_retry(user_id, file_path, file_type, clean_
 async def apply_filters(text: str, user_id: int):
     if not text: return text
     
-    text = re.sub(r'\(?https?://\S+\)?', '', text)
+    # اولویت ۱: حذف آیدی‌ها (کلماتی که با @ شروع می‌شوند و شامل حروف انگلیسی/عدد/آندرلاین هستند)
+    text = re.sub(r'@[a-zA-Z0-9_]+', '', text)
     
+    # اولویت ۲: حذف لینک‌های پیشرفته (شامل http، www، و دامنه‌هایی مثل google.com)
+    # این رگکس به خوبی لینک‌های پنهان را پیدا می‌کند و با کلمات فارسی تداخل ندارد
+    url_pattern = r'(?i)(?:https?://|www\.)?(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}(?:/[^\s]*)?'
+    text = re.sub(url_pattern, '', text)
+    
+    # اولویت ۳: اعمال کلمات حذفی (بعد از حذف آیدی و لینک)
     bad_words = await get_remove_words(user_id)
-    bad_words.sort(key=len, reverse=True)
-    for word in bad_words:
-        pattern = re.compile(re.escape(word), re.IGNORECASE)
-        text = pattern.sub("", text)
+    if bad_words:
+        bad_words.sort(key=len, reverse=True)
+        for word in bad_words:
+            pattern = re.compile(re.escape(word), re.IGNORECASE)
+            text = pattern.sub("", text)
     
+    # مرتب‌سازی فاصله‌های اضافی جا مانده از حذفیات
     text = re.sub(r'[ \t]+', ' ', text)
-    
     text = re.sub(r'(?:[^\w.!?،؛)\]"\'»]|\s)+$', '', text)
     
-    text = text.strip()
-    
-    return text
+    return text.strip()
 
 def normalize_text(text: str) -> str:
     if not text: return ""
@@ -309,6 +315,17 @@ async def process_single_message_task(msg, bot_api_from_chat_id, subscribers, al
     for user_id in subscribers:
         mappings = await get_mappings(user_id, str(bot_api_from_chat_id))
         if not mappings: continue
+        forbidden_words = await get_forbidden_words(user_id)
+        is_forbidden = False
+        if clean_text and forbidden_words:
+            for fw in forbidden_words:
+                if fw.lower() in clean_text.lower():
+                    is_forbidden = True
+                    break
+        
+        if is_forbidden:
+            LOGGER.info(f"⛔️ مسدود شد (حاوی کلمه ممنوعه) | کاربر {user_id}")
+            continue 
             
         clean_text_filtered = await apply_filters(clean_text, user_id)
         norm_text_for_cache = normalize_text(clean_text_filtered)
@@ -417,7 +434,8 @@ async def get_message_media_info(client, message):
             thumb_bytes = await client.download_media(message, file=bytes, thumb=-1)
             if thumb_bytes:
                 current_phash_str = await asyncio.to_thread(calculate_phash, thumb_bytes)
-        except Exception: pass
+        except Exception as e: 
+            LOGGER.warning(f"⚠️ Could not generate thumbnail hash for media {unique_id}: {e}")
     return unique_id, current_phash_str
 
 async def check_target_duplicate(target_id: str, filtered_text: str, unique_id: str, current_phash_str: str) -> bool:
@@ -455,6 +473,18 @@ async def process_album_task(album_msgs, bot_api_from_chat_id, subscribers, all_
     for user_id in subscribers:
         mappings = await get_mappings(user_id, str(bot_api_from_chat_id))
         if not mappings: continue
+
+        forbidden_words = await get_forbidden_words(user_id)
+        is_forbidden = False
+        if caption and forbidden_words:
+            for fw in forbidden_words:
+                if fw.lower() in caption.lower():
+                    is_forbidden = True
+                    break
+                    
+        if is_forbidden:
+            LOGGER.info(f"⛔️ مسدود شد آلبوم (حاوی کلمه ممنوعه) | کاربر {user_id}")
+            continue 
             
         clean_caption = await apply_filters(caption, user_id)
         norm_text_for_cache = normalize_text(clean_caption)

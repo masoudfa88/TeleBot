@@ -2,6 +2,7 @@ import aiosqlite
 import os
 import sys
 import time
+from core import bot, LOGGER
 
 if getattr(sys, 'frozen', False):
     application_path = os.path.dirname(sys.executable)
@@ -53,6 +54,14 @@ async def init_db():
                 UNIQUE(user_id, word)
             )
         """)
+        # 👇 جدول کلمات ممنوعه به اینجا منتقل شد تا گره‌کور ایجاد نکند 👇
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS forbidden_words (
+                user_id INTEGER,
+                word TEXT,
+                UNIQUE(user_id, word)
+            )
+        """)
         await db.execute("""
             CREATE TABLE IF NOT EXISTS targets (
                 user_id INTEGER,
@@ -70,8 +79,6 @@ async def init_db():
                 UNIQUE(user_id, source_id, target_id)
             )
         """)
-        
-        # 👇 این بخش برای ساخت جدول آمار روزانه اضافه شد 👇
         await db.execute("""
             CREATE TABLE IF NOT EXISTS daily_stats (
                 user_id INTEGER,
@@ -92,35 +99,38 @@ async def init_db():
             )
         """)
                 
-        # تلاش زوری برای اضافه کردن ستون ایتا به دیتابیس‌های ساخته شده‌ی قدیمی
         try:
             await db.execute("ALTER TABLE daily_stats ADD COLUMN eitaa_sent_count INTEGER DEFAULT 0")
-        except:
-            pass
-        # 👆 ------------------------------------------- 👆
+        except Exception as e: 
+            LOGGER.debug(f"DB Migration (eitaa_sent_count) skipped: {e}")
+        
         try:
             await db.execute("ALTER TABLE users ADD COLUMN active_license TEXT")
-        except: pass
+        except Exception as e: 
+            LOGGER.debug(f"DB Migration (active_license) skipped: {e}")
         
         try:
             await db.execute("ALTER TABLE licenses ADD COLUMN max_users INTEGER DEFAULT 1")
             await db.execute("ALTER TABLE licenses ADD COLUMN max_sources INTEGER DEFAULT 1000")
             await db.execute("ALTER TABLE licenses ADD COLUMN max_targets INTEGER DEFAULT 1000")
             await db.execute("ALTER TABLE licenses ADD COLUMN owner_id INTEGER")
-        except: pass
+        except Exception as e: 
+            LOGGER.debug(f"DB Migration (licenses limits) skipped: {e}")
 
-        # سازگار کردن لایسنس فعال فعلی شما با سیستم جدید (جلوگیری از اختلال)
         await db.execute("UPDATE users SET active_license = (SELECT license_key FROM licenses WHERE used_by = users.user_id LIMIT 1) WHERE active_license IS NULL")
         await db.execute("UPDATE licenses SET owner_id = used_by WHERE owner_id IS NULL AND is_used = 1")
+        
         try:
             async with db.execute("SELECT user_id, channel_id, append_text FROM target_channels") as cursor:
                 rows = await cursor.fetchall()
                 for r in rows:
                     await db.execute("INSERT OR IGNORE INTO targets (user_id, channel_id, append_text) VALUES (?, ?, ?)", r)
-        except Exception:
-            pass
-
+        except Exception as e: 
+            LOGGER.debug(f"DB Migration (target_channels -> targets) skipped: {e}")
+        
+        # ❌ خط await init_forbidden_words_table() از اینجا حذف شد تا هنگ نکند ❌
         await db.commit()
+        LOGGER.info("✅ Database tables checked and loaded successfully.")
         
 # 2. تابع جدید برای پیدا کردن شناسه مالک (Owner)
 async def get_owner(user_id: int):
@@ -487,4 +497,25 @@ async def delete_eitaa_target(user_id: int, channel_id: str):
     user_id = await get_owner(user_id)
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("DELETE FROM eitaa_targets WHERE user_id = ? AND channel_id = ?", (user_id, channel_id))
+        await db.commit()
+        
+# =========================================================
+# --- توابع کلمات ممنوعه (جلوگیری از انتشار کل پیام) ---
+# =========================================================
+async def add_forbidden_word(user_id: int, word: str):
+    user_id = await get_owner(user_id)
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("INSERT OR IGNORE INTO forbidden_words (user_id, word) VALUES (?, ?)", (user_id, word))
+        await db.commit()
+
+async def get_forbidden_words(user_id: int):
+    user_id = await get_owner(user_id)
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT word FROM forbidden_words WHERE user_id = ?", (user_id,)) as cursor:
+            return [row[0] for row in await cursor.fetchall()]
+
+async def delete_forbidden_word(user_id: int, word: str):
+    user_id = await get_owner(user_id)
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM forbidden_words WHERE user_id = ? AND word = ?", (user_id, word))
         await db.commit()

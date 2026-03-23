@@ -76,7 +76,9 @@ def verify_upload(br, tag_name, timeout_seconds):
                 if len(success_icons) > 0 and len(loading_icons) == 0:
                     success = True
                     break
-        except: pass
+        except Exception as e: 
+            # لاگ خطای بررسی پیام‌ها
+            LOGGER.debug(f"⚠️ [Eitaa] Verification loop exception: {e}")
         time.sleep(1)
     return success
 
@@ -104,7 +106,8 @@ def send_media(br, file_paths_list, caption_text, tag_name, timeout=120):
         for label in br.find_elements(By.XPATH, "//label[contains(., 'فایل')]"):
             cb = label.find_element(By.CSS_SELECTOR, "input[type='checkbox']")
             if cb.is_selected(): br.execute_script("arguments[0].click();", cb)
-    except: pass
+    except Exception as e: 
+        LOGGER.warning(f"⚠️ [Eitaa] Could not handle compression checkboxes: {e}")
 
     caption_box = br.find_elements(By.CSS_SELECTOR, "div[contenteditable='true']")[-1] 
     br.execute_script("arguments[0].focus(); document.execCommand('insertText', false, arguments[1]);", caption_box, caption_text)
@@ -115,7 +118,8 @@ def send_media(br, file_paths_list, caption_text, tag_name, timeout=120):
     caption_box.send_keys(Keys.RETURN)
     
     try: WebDriverWait(br, 10).until(EC.staleness_of(caption_box))
-    except: pass
+    except Exception as e: 
+        LOGGER.warning(f"⚠️ [Eitaa] Popup did not close within 10s: {e}")
 
     if verify_upload(br, tag_name, timeout):
         LOGGER.info("🎉 [Eitaa] Upload Confirmed! ✅")
@@ -134,7 +138,9 @@ def send_text(br, text_message, tag_name, timeout=30):
     )
     
     try: chat_box.click() 
-    except: br.execute_script("arguments[0].click();", chat_box)
+    except Exception as e: 
+        LOGGER.debug(f"⚠️ [Eitaa] Standard click failed, using JS click: {e}")
+        br.execute_script("arguments[0].click();", chat_box)
     time.sleep(1)
 
     LOGGER.info("✍️ [Eitaa] Injecting text and sending input signal...")
