@@ -24,9 +24,10 @@ def resource_path(relative_path):
 load_dotenv(resource_path(".env"))
 LOGGER = logging.getLogger(__name__)
 
-# --- مرورگر به صورت گلوبال ذخیره می‌شود تا همیشه باز بماند ---
+# --- متغیرهای گلوبال ---
 driver = None
 is_browser_open = False
+upload_counter = 0  # 👈 شمارشگر آپلود برای رفرش دوره‌ای
 
 def get_driver():
     global driver, is_browser_open
@@ -77,7 +78,6 @@ def verify_upload(br, tag_name, timeout_seconds):
                     success = True
                     break
         except Exception as e: 
-            # لاگ خطای بررسی پیام‌ها
             LOGGER.debug(f"⚠️ [Eitaa] Verification loop exception: {e}")
         time.sleep(1)
     return success
@@ -110,7 +110,10 @@ def send_media(br, file_paths_list, caption_text, tag_name, timeout=120):
         LOGGER.warning(f"⚠️ [Eitaa] Could not handle compression checkboxes: {e}")
 
     caption_box = br.find_elements(By.CSS_SELECTOR, "div[contenteditable='true']")[-1] 
-    br.execute_script("arguments[0].focus(); document.execCommand('insertText', false, arguments[1]);", caption_box, caption_text)
+    
+    if caption_text:
+        br.execute_script("arguments[0].focus(); document.execCommand('insertText', false, arguments[1]);", caption_box, caption_text)
+        
     caption_box.send_keys(" ")
     time.sleep(1)
     
@@ -160,29 +163,72 @@ def send_text(br, text_message, tag_name, timeout=30):
         LOGGER.info("🎉 [Eitaa] Text Message Sent! ✅")
         return True
     else:
-        LOGGER.warning("⚠️ [Eitaa] Text message sent but no server confirmation.")
+        LOGGER.warning("⚠️ [Eitaa] Text message sent but no server confirmation received.")
         return False
 
 # =========================================================
 # موتور پردازش اصلی
 # =========================================================
 def process_eitaa_message(text, file_paths, chat_id):
+    global upload_counter
     br = get_driver()
     if not br: return False
+    
     try:
+        # =======================================================
+        # ♻️ سیستم بازیافت حافظه ایتا (رفرش هر ۵ آپلود)
+        # =======================================================
+        if file_paths:
+            if upload_counter >= 5:
+                LOGGER.info("🔄 [Eitaa] Reached 5 uploads limit. Refreshing page to clear browser memory...")
+                try:
+                    br.get("https://web.eitaa.com/")
+                    time.sleep(5) # وقفه کوتاه برای اجرای اسکریپت‌های ایتا
+                    # حداکثر ۳۰ ثانیه منتظر می‌ماند تا لود شود، اگر نشد ادامه می‌دهد تا هنگ نکند
+                    WebDriverWait(br, 30).until(EC.presence_of_element_located((By.ID, "main-search")))
+                    LOGGER.info("✅ [Eitaa] Page refreshed successfully.")
+                except Exception as e:
+                    LOGGER.warning(f"⚠️ [Eitaa] Refresh timeout/error, continuing anyway: {e}")
+                
+                upload_counter = 0 # ریست شمارشگر
+            
+            upload_counter += 1 # افزودن به شمارشگر آپلود
+        # =======================================================
+
         chat_id = chat_id.replace("@", "").replace("https://eitaa.com/", "").strip()
         LOGGER.info(f"🔄 [Eitaa] Switching channel to @{chat_id} ...")
         br.get(f"https://web.eitaa.com/#/im?p=@{chat_id}")
         
-        WebDriverWait(br, 15).until(EC.element_to_be_clickable((By.CSS_SELECTOR, ".attach-file")))
+        try:
+            WebDriverWait(br, 15).until(EC.element_to_be_clickable((By.CSS_SELECTOR, ".attach-file")))
+        except Exception:
+            # در صورتی که به هر دلیلی کانال لود نشد، یک بار دیگر صفحه را رفرش می‌کند
+            br.refresh()
+            time.sleep(3)
+            WebDriverWait(br, 15).until(EC.element_to_be_clickable((By.CSS_SELECTOR, ".attach-file")))
         
         tag_name = f"data-tag-{uuid.uuid4().hex[:8]}"
         caption = text if text else ""
         
         if file_paths:
-            # محاسبه هوشمند زمان انتظار بر اساس تعداد فایل (حداقل 120 ثانیه + 30 ثانیه برای هر فایل اضافه)
             timeout = 120 + (len(file_paths) * 30)
-            return send_media(br, file_paths, caption, tag_name, timeout)
+            
+            # =======================================================
+            # ✂️ سیستم مدیریت محدودیت کپشن ایتا (حداکثر 1626 کاراکتر)
+            # =======================================================
+            if len(caption) > 1626:
+                LOGGER.info(f"✂️ [Eitaa] Caption exceeds limit ({len(caption)} chars). Sending media without text first...")
+                media_success = send_media(br, file_paths, "", tag_name, timeout)
+                
+                if media_success:
+                    LOGGER.info("📝 [Eitaa] Media sent. Now sending the long caption as a separate text message...")
+                    time.sleep(2)
+                    text_tag = f"data-tag-{uuid.uuid4().hex[:8]}"
+                    return send_text(br, caption, text_tag, 30)
+                
+                return media_success
+            else:
+                return send_media(br, file_paths, caption, tag_name, timeout)
         else:
             return send_text(br, caption, tag_name, 30)
             

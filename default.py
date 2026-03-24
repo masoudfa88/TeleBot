@@ -1030,4 +1030,4 @@ conv_handler = ConversationHandler(
 )
 
 bot.add_handler(conv_handler)
-bot.add_handler(CallbackQueryHandler(inline_callback, pattern="^(pub_|edit_|ignore|delsrc_|tgtsrc_|setmap_|deltgt_|delbaletgt_|editbalesig_|close_menu|delword_)"))
+bot.add_handler(CallbackQueryHandler(inline_callback, pattern="^(pub_|edit_|ignore|delsrc_|tgtsrc_|setmap_|deltgt_|delbaletgt_|editbalesig_|close_menu|delword_|delforbid_action)"))
