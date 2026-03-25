@@ -169,12 +169,56 @@ async def add_advanced_license(license_key: str, max_users: int, max_sources: in
     
 async def get_all_licenses():
     async with aiosqlite.connect(DB_PATH) as db:
+        # دریافت اطلاعات پایه لایسنس‌ها
         async with db.execute('''
-            SELECT l.license_key, l.is_used, l.used_by, u.name, l.max_users, l.max_sources, l.max_targets 
-            FROM licenses l 
-            LEFT JOIN users u ON l.used_by = u.user_id
+            SELECT 
+                l.license_key, 
+                l.owner_id,
+                (SELECT name FROM users WHERE user_id = l.owner_id) as owner_name,
+                l.max_users, 
+                l.max_sources, 
+                l.max_targets,
+                (SELECT COUNT(*) FROM users WHERE active_license = l.license_key AND is_active = 1) as current_users
+            FROM licenses l
         ''') as cursor:
-            return await cursor.fetchall()
+            licenses = await cursor.fetchall()
+        
+        result = []
+        for lic in licenses:
+            lic_key, owner_id, owner_name, max_users, max_src, max_tgt, current_users = lic
+            
+            # دریافت نام کاربرانی که الان روی این لایسنس فعال هستند
+            async with db.execute("SELECT name FROM users WHERE active_license = ? AND is_active = 1", (lic_key,)) as c:
+                users_list = [row[0] for row in await c.fetchall()]
+            
+            current_src = 0
+            current_tgt = 0
+            if owner_id:
+                # محاسبه تعداد مبدأ
+                async with db.execute("SELECT COUNT(*) FROM subscriptions WHERE user_id = ?", (owner_id,)) as c:
+                    current_src = (await c.fetchone())[0]
+                # محاسبه تعداد کل مقاصد (تلگرام + بله + ایتا)
+                async with db.execute("SELECT COUNT(*) FROM targets WHERE user_id = ?", (owner_id,)) as c:
+                    t1 = (await c.fetchone())[0]
+                async with db.execute("SELECT COUNT(*) FROM bale_targets WHERE user_id = ?", (owner_id,)) as c:
+                    t2 = (await c.fetchone())[0]
+                async with db.execute("SELECT COUNT(*) FROM eitaa_targets WHERE user_id = ?", (owner_id,)) as c:
+                    t3 = (await c.fetchone())[0]
+                current_tgt = t1 + t2 + t3
+                
+            result.append({
+                'license_key': lic_key,
+                'owner_id': owner_id,
+                'owner_name': owner_name if owner_name else "نامشخص",
+                'max_users': max_users,
+                'max_sources': max_src,
+                'max_targets': max_tgt,
+                'current_users': current_users,
+                'current_sources': current_src,
+                'current_targets': current_tgt,
+                'users_list': users_list
+            })
+        return result
 
 async def update_license_limits(license_key: str, max_users: int, max_sources: int, max_targets: int):
     async with aiosqlite.connect(DB_PATH) as db:

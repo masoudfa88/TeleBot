@@ -139,14 +139,12 @@ async def receive_change_license(update: Update, context: ContextTypes.DEFAULT_T
 async def handle_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     user_id = update.effective_user.id
-
     # بررسی فعال بودن حساب کاربر
     if user_id != ADMIN_ID:
         user = await check_user(user_id)
         if user and user[1] == 0:
             await update.message.reply_text("❌ اعتبار شما پایان یافته است. لطفا برای وارد کردن لایسنس جدید /start را بزنید.", reply_markup=ReplyKeyboardRemove())
             return CHOOSING
-
     if text == "📥 کانال مبدأ":
         await update.message.reply_text("تنظیمات کانال‌های مبدأ:", reply_markup=source_keyboard)
         return CHOOSING
@@ -320,25 +318,35 @@ async def handle_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         count = 0
         
         for lic in licenses:
-            lic_key = lic[0]
-            status = f"استفاده شده توسط {lic[3]} (آیدی: {lic[2]})" if lic[1] else "آزاد"
+            lic_key = lic['license_key']
             
-            m_users = lic[4] if len(lic) > 4 and lic[4] is not None else 1
-            m_src = lic[5] if len(lic) > 5 and lic[5] is not None else 1000
-            m_tgt = lic[6] if len(lic) > 6 and lic[6] is not None else 1000
+            # بررسی وضعیت کاربران
+            if lic['current_users'] > 0:
+                users_str = "، ".join(lic['users_list'])
+                status = f"در حال استفاده ({lic['current_users']}/{lic['max_users']})\n👤 کاربران: {users_str}"
+            elif lic['owner_id']:
+                status = f"بدون کاربر فعال (مالک اولیه: {lic['owner_name']})"
+            else:
+                status = "آزاد (استفاده نشده)"
+            
+            m_users = lic['max_users'] if lic['max_users'] is not None else 1
+            m_src = lic['max_sources'] if lic['max_sources'] is not None else 1000
+            m_tgt = lic['max_targets'] if lic['max_targets'] is not None else 1000
+            
+            c_src = lic['current_sources']
+            c_tgt = lic['current_targets']
             
             chunk_text += f"🔑 `{lic_key}`\n"
             chunk_text += f"وضعیت: {status}\n"
-            chunk_text += f"ظرفیت: {m_users} کاربر | {m_src} مبدأ | {m_tgt} مقصد\n\n"
+            chunk_text += f"📊 مبدأ: {c_src}/{m_src} | 🎯 مقصد: {c_tgt}/{m_tgt}\n\n"
             
-            # دکمه‌های شیشه‌ای مخصوص همین لایسنس
             chunk_keys.append([
                 InlineKeyboardButton(f"✏️ ویرایش ظرفیت", callback_data=f"editlic_{lic_key}"),
                 InlineKeyboardButton(f"🗑 حذف لایسنس", callback_data=f"dellic_{lic_key}")
             ])
             
             count += 1
-            if count % 5 == 0: # ارسال هر 5 لایسنس در یک پیام برای تمیزی ظاهر
+            if count % 5 == 0: 
                 await update.message.reply_text(chunk_text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(chunk_keys))
                 chunk_text = ""
                 chunk_keys = []
