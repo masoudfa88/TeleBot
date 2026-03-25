@@ -239,12 +239,26 @@ def process_eitaa_message(text, file_paths, chat_id):
 # =========================================================
 # رابط‌های فراخوانی برای سیستم مرکزی
 # =========================================================
+
+# 👇 متغیر و تابع جدید برای مدیریت صف مرورگر
+_eitaa_lock = None
+
+def get_eitaa_lock():
+    global _eitaa_lock
+    if _eitaa_lock is None:
+        _eitaa_lock = asyncio.Lock()
+    return _eitaa_lock
+
 async def send_to_eitaa(text: str = None, file_path: str = None, file_type: str = None, filename: str = None, chat_id: str = None):
     if not chat_id: return False
     paths = [os.path.abspath(file_path)] if file_path else []
     
     LOGGER.info(f"📤 [Eitaa] Queueing single message for {chat_id}")
-    success = await asyncio.to_thread(process_eitaa_message, text, paths, chat_id)
+    
+    # 👇 قفل کردن مرورگر برای جلوگیری از تداخل
+    async with get_eitaa_lock():
+        success = await asyncio.to_thread(process_eitaa_message, text, paths, chat_id)
+        
     return success
 
 async def send_album_to_eitaa(media_items: list, chat_id: str = None):
@@ -254,5 +268,9 @@ async def send_album_to_eitaa(media_items: list, chat_id: str = None):
     caption = media_items[0].get('caption', "")
     
     LOGGER.info(f"📤 [Eitaa] Queueing album ({len(paths)} files) for {chat_id}")
-    success = await asyncio.to_thread(process_eitaa_message, caption, paths, chat_id)
+    
+    # 👇 قفل کردن مرورگر برای جلوگیری از تداخل
+    async with get_eitaa_lock():
+        success = await asyncio.to_thread(process_eitaa_message, caption, paths, chat_id)
+        
     return success
