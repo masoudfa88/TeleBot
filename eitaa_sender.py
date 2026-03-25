@@ -119,6 +119,8 @@ def send_media(br, file_paths_list, caption_text, tag_name, timeout=120):
     
     LOGGER.info("🚀 [Eitaa] Sending media...")
     caption_box.send_keys(Keys.RETURN)
+    time.sleep(1)
+    caption_box.send_keys(Keys.RETURN)
     
     try: WebDriverWait(br, 10).until(EC.staleness_of(caption_box))
     except Exception as e: 
@@ -158,6 +160,8 @@ def send_text(br, text_message, tag_name, timeout=30):
     
     LOGGER.info("🚀 [Eitaa] Sending text...")
     chat_box.send_keys(Keys.RETURN)
+    time.sleep(1)
+    chat_box.send_keys(Keys.RETURN)    
 
     if verify_upload(br, tag_name, timeout):
         LOGGER.info("🎉 [Eitaa] Text Message Sent! ✅")
