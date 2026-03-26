@@ -10,8 +10,9 @@ from telegram import InputMediaPhoto, InputMediaVideo, InlineKeyboardMarkup, Inl
 from telegram.error import TelegramError
 from core import bot, LOGGER
 from database import get_license_subscribers, get_remove_words, get_channel_title, ALBUM_CAPTIONS, get_mappings
-from database import init_cache_table, add_to_cache, get_recent_cache, cleanup_cache, get_forbidden_words
+from database import add_to_cache, get_recent_cache, cleanup_cache, get_forbidden_words
 from database import get_target_by_id, get_bale_targets, get_eitaa_targets, increment_stat, get_users_of_license
+from telegram.constants import ParseMode
 import sys
 import json
 import re
@@ -119,10 +120,11 @@ async def send_tg_album_with_retry(tgt, downloaded_files, final_auto_caption):
                     caption_added = True
             if media_group:
                 await bot.bot.send_media_group(chat_id=tgt, media=media_group, read_timeout=300.0, write_timeout=300.0)
-            return
+            return True
         except Exception as e:
             LOGGER.warning(f"⚠️ TG Album Timeout for {tgt} (Attempt {attempt+1}/3): {e}")
             if attempt == 2: LOGGER.error(f"❌ Failed to send album to {tgt}.")
+            
             else: await asyncio.sleep(3)
         finally:
             for f in opened_files: f.close()
@@ -605,7 +607,7 @@ async def process_unread_dialogs():
         LOGGER.error(f"❌ خطا در پردازش گفتگوهای سین‌نخورده: {e}")
         
 async def main():
-    await init_cache_table()
+    # await init_cache_table()
     asyncio.create_task(periodic_cache_cleanup())
     
     try:

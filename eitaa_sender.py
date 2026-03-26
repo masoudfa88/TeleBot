@@ -13,6 +13,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.keys import Keys
 from webdriver_manager.chrome import ChromeDriverManager
+from selenium.webdriver.common.action_chains import ActionChains
 
 def resource_path(relative_path):
     try:
@@ -120,7 +121,7 @@ def send_media(br, file_paths_list, caption_text, tag_name, timeout=120):
     LOGGER.info("🚀 [Eitaa] Sending media...")
     caption_box.send_keys(Keys.RETURN)
     time.sleep(1)
-    caption_box.send_keys(Keys.RETURN)
+    ActionChains(br).send_keys(Keys.RETURN).perform()
     
     try: WebDriverWait(br, 10).until(EC.staleness_of(caption_box))
     except Exception as e: 
@@ -161,7 +162,7 @@ def send_text(br, text_message, tag_name, timeout=30):
     LOGGER.info("🚀 [Eitaa] Sending text...")
     chat_box.send_keys(Keys.RETURN)
     time.sleep(1)
-    chat_box.send_keys(Keys.RETURN)    
+    ActionChains(br).send_keys(Keys.RETURN).perform()
 
     if verify_upload(br, tag_name, timeout):
         LOGGER.info("🎉 [Eitaa] Text Message Sent! ✅")
@@ -204,15 +205,12 @@ def process_eitaa_message(text, file_paths, chat_id):
         chat_id = chat_id.replace("@", "").replace("https://eitaa.com/", "").strip()
         LOGGER.info(f"🔄 [Eitaa] Switching channel to @{chat_id} ...")
         
-        # 1. رفتن به آدرس چت جدید
         br.get(f"https://web.eitaa.com/#/im?p=@{chat_id}")
         
-        # 2. رفرش کردن صفحه در چت جدید برای جلوگیری از کش شدن چت قبلی
+        time.sleep(2)
+        
         LOGGER.info(f"🔄 [Eitaa] Refreshing the page for @{chat_id} to prevent race conditions...")
         br.refresh()
-        
-        # 3. دو ثانیه صبر برای احتیاط (طبق درخواست شما)
-        time.sleep(2)
         
         try:
             # منتظر ماندن برای لود شدن کامل دکمه پیوست در کانال جدید
