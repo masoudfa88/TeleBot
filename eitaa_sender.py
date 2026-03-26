@@ -173,6 +173,9 @@ def send_text(br, text_message, tag_name, timeout=30):
 # =========================================================
 # موتور پردازش اصلی
 # =========================================================
+# =========================================================
+# موتور پردازش اصلی
+# =========================================================
 def process_eitaa_message(text, file_paths, chat_id):
     global upload_counter
     br = get_driver()
@@ -188,7 +191,6 @@ def process_eitaa_message(text, file_paths, chat_id):
                 try:
                     br.get("https://web.eitaa.com/")
                     time.sleep(5) # وقفه کوتاه برای اجرای اسکریپت‌های ایتا
-                    # حداکثر ۳۰ ثانیه منتظر می‌ماند تا لود شود، اگر نشد ادامه می‌دهد تا هنگ نکند
                     WebDriverWait(br, 30).until(EC.presence_of_element_located((By.ID, "main-search")))
                     LOGGER.info("✅ [Eitaa] Page refreshed successfully.")
                 except Exception as e:
@@ -201,12 +203,23 @@ def process_eitaa_message(text, file_paths, chat_id):
 
         chat_id = chat_id.replace("@", "").replace("https://eitaa.com/", "").strip()
         LOGGER.info(f"🔄 [Eitaa] Switching channel to @{chat_id} ...")
+        
+        # 1. رفتن به آدرس چت جدید
         br.get(f"https://web.eitaa.com/#/im?p=@{chat_id}")
         
+        # 2. رفرش کردن صفحه در چت جدید برای جلوگیری از کش شدن چت قبلی
+        LOGGER.info(f"🔄 [Eitaa] Refreshing the page for @{chat_id} to prevent race conditions...")
+        br.refresh()
+        
+        # 3. دو ثانیه صبر برای احتیاط (طبق درخواست شما)
+        time.sleep(2)
+        
         try:
+            # منتظر ماندن برای لود شدن کامل دکمه پیوست در کانال جدید
             WebDriverWait(br, 15).until(EC.element_to_be_clickable((By.CSS_SELECTOR, ".attach-file")))
         except Exception:
             # در صورتی که به هر دلیلی کانال لود نشد، یک بار دیگر صفحه را رفرش می‌کند
+            LOGGER.warning("⚠️ [Eitaa] Attach button not found, trying one more refresh...")
             br.refresh()
             time.sleep(3)
             WebDriverWait(br, 15).until(EC.element_to_be_clickable((By.CSS_SELECTOR, ".attach-file")))
