@@ -34,7 +34,6 @@ def run() -> None:
             LOGGER.info("📅 سیستم گزارش‌گیری روزانه (ساعت 12 شب) فعال شد.")
             while True:
                 now = datetime.datetime.now()
-                # پیدا کردن زمان دقیق 12 شب امشب (بامداد فردا)
                 tomorrow = now + datetime.timedelta(days=1)
                 midnight = datetime.datetime(year=tomorrow.year, month=tomorrow.month, day=tomorrow.day, hour=0, minute=0, second=0)
                 seconds_until_midnight = (midnight - now).total_seconds()
@@ -45,14 +44,13 @@ def run() -> None:
                 try:
                     stats = await get_all_daily_stats()
                     if stats:
-                        user_reports = {}
-                        for user_id, source_id, fetched, tg_sent, bale_sent, eitaa_sent in stats:
-                            if user_id not in user_reports:
-                                user_reports[user_id] = []
+                        license_reports = {}
+                        for license_key, source_id, fetched, tg_sent, bale_sent, eitaa_sent in stats:
+                            if license_key not in license_reports:
+                                license_reports[license_key] = []
 
-                            # نام کانال مبدأ
                             ch_id_int = int(source_id) if source_id.lstrip('-').isdigit() else source_id
-                            ch_title = await get_channel_title(user_id, ch_id_int)
+                            ch_title = await get_channel_title(license_key, ch_id_int)
 
                             report_line = (
                                 f"📢 **{ch_title}** (`{source_id}`)\n"
@@ -61,21 +59,25 @@ def run() -> None:
                                 f"🟢 منتشر شده در بله: {bale_sent}\n"
                                 f"🟠 منتشر شده در ایتا: {eitaa_sent}\n"
                             )
-                            user_reports[user_id].append(report_line)
+                            license_reports[license_key].append(report_line)
 
-                        for uid, lines in user_reports.items():
-                            report_text = "📊 **گزارش عملکرد امروز ربات:**\n\n" + "\n\n".join(lines)
-                            try:
-                                await bot.bot.send_message(chat_id=uid, text=report_text, parse_mode='Markdown')
-                            except Exception as e:
-                                LOGGER.error(f"❌ خطا در ارسال گزارش برای کاربر {uid}: {e}")
+                        for lic_key, lines in license_reports.items():
+                            report_text = f"📊 **گزارش عملکرد امروز لایسنس ( `{lic_key}` ):**\n\n" + "\n\n".join(lines)
+                            
+                            # ارسال به تمامی کاربرانی که روی این لایسنس تنظیم شده‌اند
+                            from database import get_users_of_license
+                            users = await get_users_of_license(lic_key)
+                            for uid in users:
+                                try:
+                                    await bot.bot.send_message(chat_id=uid, text=report_text, parse_mode='Markdown')
+                                except Exception as e:
+                                    LOGGER.error(f"❌ خطا در ارسال گزارش برای کاربر {uid}: {e}")
 
-                    # ریست کردن جدول برای روز بعد
                     await reset_daily_stats()
                     LOGGER.info("✅ گزارش‌های روزانه با موفقیت ارسال و آمار ریست شد.")
                 except Exception as e:
                     LOGGER.error(f"❌ خطا در چرخه گزارش روزانه: {e}")
-        
+                    
         # 👈 اضافه کردن این تسک به چرخه‌ی پس‌زمینه (مکان درست اینجاست)
         asyncio.create_task(daily_report_task())
 

@@ -11,16 +11,14 @@ from core import bot, LOGGER, OWNER_ID
 
 ADMIN_ID = OWNER_ID
 
-# ADMIN_ID = 53718944
-
 (CHOOSING, TYPING_ADD_CHANNEL, TYPING_REMOVE_WORDS, TYPING_FORBIDDEN_WORDS,
  TYPING_TARGET_CHANNEL, TYPING_APPEND_TEXT, 
  ASK_NAME, ASK_LICENSE, WAITING_FOR_EDIT, 
  TYPING_DELETE_TARGET, TYPING_NEW_NAME, TYPING_CHANGE_LICENSE, TYPING_EDIT_SIGNATURE,
  TYPING_BALE_TARGET, TYPING_BALE_APPEND, TYPING_DELETE_BALE, TYPING_EDIT_BALE_SIG,
  TYPING_EITAA_TARGET, TYPING_EITAA_APPEND, TYPING_DELETE_EITAA, TYPING_EDIT_EITAA_SIG, 
- ASK_MAX_USERS, ASK_MAX_SOURCES, ASK_MAX_TARGETS,
- EDIT_LIC_USERS, EDIT_LIC_SOURCES, EDIT_LIC_TARGETS) = range(27)
+ ASK_LICENSE_NAME, ASK_MAX_USERS, ASK_MAX_SOURCES, ASK_MAX_TARGETS,
+ EDIT_LIC_USERS, EDIT_LIC_SOURCES, EDIT_LIC_TARGETS) = range(28)
 
 # --- توابع کیبوردهای داینامیک ---
 def get_main_keyboard(user_id):
@@ -197,7 +195,8 @@ async def handle_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return TYPING_REMOVE_WORDS
 
     elif text == "🗑 فهرست کلمات حذفی":
-        words = await get_remove_words(user_id)
+        lic = await get_user_license(user_id)
+        words = await get_remove_words(lic) if lic else []
         if not words:
             await update.message.reply_text("هیچ کلمه‌ای در لیست حذفیات شما وجود ندارد.", reply_markup=source_keyboard)
         else:
@@ -211,8 +210,8 @@ async def handle_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return TYPING_FORBIDDEN_WORDS
 
     elif text == "🗑 فهرست کلمات ممنوعه":
-        from database import get_forbidden_words
-        words = await get_forbidden_words(user_id)
+        lic = await get_user_license(user_id)
+        words = await get_forbidden_words(lic) if lic else []
         if not words:
             await update.message.reply_text("هیچ کلمه ممنوعه‌ای در لیست شما وجود ندارد.", reply_markup=source_keyboard)
         else:
@@ -304,8 +303,8 @@ async def handle_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # --- دکمه‌های پنل ادمین ---
     elif text == "🔑 تولید لایسنس" and user_id == ADMIN_ID:
-        await update.message.reply_text("چند نفر مدیر می‌توانند از این لایسنس استفاده کنند؟ (فقط یک عدد وارد کنید):", reply_markup=cancel_keyboard)
-        return ASK_MAX_USERS
+        await update.message.reply_text("یک نام یا عنوان برای این لایسنس وارد کنید (مثلاً نام سازمان/شخص):", reply_markup=cancel_keyboard)
+        return ASK_LICENSE_NAME
 
     elif text == "📜 مشاهده لایسنس‌ها" and user_id == ADMIN_ID:
         licenses = await get_all_licenses()
@@ -313,52 +312,44 @@ async def handle_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("هیچ لایسنسی یافت نشد.")
             return CHOOSING
             
-        chunk_text = "📜 **لیست لایسنس‌ها:**\n\n"
-        chunk_keys = []
-        count = 0
-        
         for lic in licenses:
             lic_key = lic['license_key']
+            status_text = "🟢 فعال" if lic['is_active'] else "🔴 غیرفعال"
+            users_str = "، ".join(lic['users_list']) if lic['users_list'] else "ندارد"
             
-            # بررسی وضعیت کاربران
-            if lic['current_users'] > 0:
-                users_str = "، ".join(lic['users_list'])
-                status = f"در حال استفاده ({lic['current_users']}/{lic['max_users']})\n👤 کاربران: {users_str}"
-            elif lic['owner_id']:
-                status = f"بدون کاربر فعال (مالک اولیه: {lic['owner_name']})"
-            else:
-                status = "آزاد (استفاده نشده)"
+            chunk_text = (
+                f"🔑 `{lic_key}`\n"
+                f"🏷 نام: {lic['name']}\n"
+                f"وضعیت کلی: {status_text}\n"
+                f"👥 کاربران متصل: {users_str} ({lic['current_users']}/{lic['max_users']})\n"
+                f"📊 مبدأ: {lic['current_sources']}/{lic['max_sources']} | 🎯 مقصد: {lic['current_targets']}/{lic['max_targets']}\n"
+            )
             
-            m_users = lic['max_users'] if lic['max_users'] is not None else 1
-            m_src = lic['max_sources'] if lic['max_sources'] is not None else 1000
-            m_tgt = lic['max_targets'] if lic['max_targets'] is not None else 1000
-            
-            c_src = lic['current_sources']
-            c_tgt = lic['current_targets']
-            
-            chunk_text += f"🔑 `{lic_key}`\n"
-            chunk_text += f"وضعیت: {status}\n"
-            chunk_text += f"📊 مبدأ: {c_src}/{m_src} | 🎯 مقصد: {c_tgt}/{m_tgt}\n\n"
-            
-            chunk_keys.append([
-                InlineKeyboardButton(f"✏️ ویرایش ظرفیت", callback_data=f"editlic_{lic_key}"),
-                InlineKeyboardButton(f"🗑 حذف لایسنس", callback_data=f"dellic_{lic_key}")
-            ])
-            
-            count += 1
-            if count % 5 == 0: 
-                await update.message.reply_text(chunk_text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(chunk_keys))
-                chunk_text = ""
-                chunk_keys = []
-                
-        if chunk_text:
+            chunk_keys = [
+                [InlineKeyboardButton("تغییر وضعیت (فعال/غیرفعال)", callback_data=f"togglelic_{lic_key}")],
+                [
+                    InlineKeyboardButton(f"✏️ ویرایش ظرفیت", callback_data=f"editlic_{lic_key}"),
+                    InlineKeyboardButton(f"🗑 حذف لایسنس", callback_data=f"dellic_{lic_key}")
+                ]
+            ]
             await update.message.reply_text(chunk_text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(chunk_keys))
-            
         return CHOOSING
+
+# افزودن تابع جدید برای دریافت نام لایسنس:
+async def receive_license_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    if text == "بازگشت 🔙": 
+        await update.message.reply_text("عملیات لغو شد.", reply_markup=admin_keyboard)
+        return CHOOSING
+    context.user_data['lic_name'] = text
+    await update.message.reply_text("چند نفر کاربر می‌توانند از این لایسنس استفاده کنند؟ (فقط یک عدد وارد کنید):", reply_markup=cancel_keyboard)
+    return ASK_MAX_USERS
 
 async def receive_max_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
-    if text == "بازگشت 🔙": return CHOOSING
+    if text == "بازگشت 🔙": 
+        await update.message.reply_text("عملیات لغو شد.", reply_markup=admin_keyboard)
+        return CHOOSING
     if not text.isdigit():
         await update.message.reply_text("لطفاً فقط یک عدد وارد کنید:")
         return ASK_MAX_USERS
@@ -368,7 +359,9 @@ async def receive_max_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def receive_max_sources(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
-    if text == "بازگشت 🔙": return CHOOSING
+    if text == "بازگشت 🔙": 
+        await update.message.reply_text("عملیات لغو شد.", reply_markup=admin_keyboard)
+        return CHOOSING
     if not text.isdigit():
         await update.message.reply_text("لطفاً فقط عدد وارد کنید:")
         return ASK_MAX_SOURCES
@@ -380,17 +373,21 @@ async def receive_max_targets(update: Update, context: ContextTypes.DEFAULT_TYPE
     text = update.message.text
     if text == "بازگشت 🔙": return CHOOSING
     if not text.isdigit():
-        await update.message.reply_text("لطفاً فقط عدد وارد کنید:")
         return ASK_MAX_TARGETS
     
     max_targets = int(text)
     max_users = context.user_data.get('max_users', 1)
     max_sources = context.user_data.get('max_sources', 100)
+    lic_name = context.user_data.get('lic_name', 'Default')
     
-    new_license = "LIC-" + str(uuid.uuid4()).split("-")[0].upper()
-    await add_advanced_license(new_license, max_users, max_sources, max_targets)
+    import uuid
+    # تولید فرمت جدید لایسنس به همراه اسم
+    new_license = f"LIC-{str(uuid.uuid4()).split('-')[0].upper()}-{lic_name.replace(' ', '_')}"
+    
+    await add_advanced_license(new_license, lic_name, max_users, max_sources, max_targets)
     
     msg = (f"✅ لایسنس جدید تولید شد:\n`{new_license}`\n\n"
+           f"🏷 نام لایسنس: {lic_name}\n"
            f"👥 ظرفیت مدیران: {max_users} نفر\n"
            f"📥 ظرفیت مبدأ: {max_sources} کانال\n"
            f"📤 ظرفیت مقصد: {max_targets} کانال")
@@ -400,10 +397,12 @@ async def receive_max_targets(update: Update, context: ContextTypes.DEFAULT_TYPE
 # ----------------- Input Receivers -----------------
 async def receive_add_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
-    if text == "بازگشت 🔙": return CHOOSING
+    if text == "بازگشت 🔙": 
+        await update.message.reply_text("عملیات لغو شد.", reply_markup=source_keyboard)
+        return CHOOSING
 
-    owner_id = await get_owner(update.effective_user.id)
-    if not await check_source_limit(owner_id):
+    lic = await get_user_license(update.effective_user.id)
+    if not lic or not await check_source_limit(lic):
         await update.message.reply_text("❌ سقف مجاز کانال‌های مبدأ برای لایسنس شما پر شده است!", reply_markup=source_keyboard)
         return CHOOSING
         
@@ -441,9 +440,8 @@ async def receive_target_channel(update: Update, context: ContextTypes.DEFAULT_T
         await update.message.reply_text("لغو شد.", reply_markup=target_keyboard)
         return CHOOSING
     
-    owner_id = await get_owner(update.effective_user.id)
-    
-    if not await check_target_limit(owner_id):
+    lic = await get_user_license(update.effective_user.id)
+    if not lic or not await check_target_limit(lic):
         await update.message.reply_text("❌ سقف مجاز کانال‌های مقصد برای لایسنس شما پر شده است!\nنمی‌توانید کانال جدیدی اضافه کنید.", reply_markup=target_keyboard)
         return CHOOSING
 
@@ -457,8 +455,8 @@ async def receive_eitaa_target(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text("لغو شد.", reply_markup=eitaa_keyboard)
         return CHOOSING
     
-    owner_id = await get_owner(update.effective_user.id)
-    if not await check_target_limit(owner_id):
+    lic = await get_user_license(update.effective_user.id)
+    if not lic or not await check_target_limit(lic):
         await update.message.reply_text("❌ سقف مجاز پر شده است!", reply_markup=eitaa_keyboard)
         return CHOOSING
 
@@ -501,9 +499,8 @@ async def receive_bale_target(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text("لغو شد.", reply_markup=bale_keyboard)
         return CHOOSING
     
-    owner_id = await get_owner(update.effective_user.id)
-    
-    if not await check_target_limit(owner_id):
+    lic = await get_user_license(update.effective_user.id)
+    if not lic or not await check_target_limit(lic):
         await update.message.reply_text("❌ سقف مجاز کانال‌های مقصد برای لایسنس شما پر شده است!\nنمی‌توانید مقصد بله جدیدی اضافه کنید.", reply_markup=bale_keyboard)
         return CHOOSING
 
@@ -679,9 +676,13 @@ async def inline_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         original_text = query.message.text or query.message.caption or ""
+        lic = await get_user_license(user_id)
+        if not lic:
+            await query.answer("خطا: لایسنس نامعتبر است.", show_alert=True)
+            return
         
         for tgt in manual_targets:
-            target_info = await get_target_by_id(user_id, tgt)
+            target_info = await get_target_by_id(lic, tgt)
             if not target_info: continue
             append_text = target_info[1]
             final_text = f"{original_text}\n\n{append_text}" if original_text else append_text
@@ -706,11 +707,13 @@ async def inline_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.answer("مقصدی برای انتشار دستی تنظیم نشده!", show_alert=True)
             return
 
-        # 🔥 تغییر مهم: استفاده از pop برای پاک کردن از رم
         original_caption = ALBUM_CAPTIONS.pop(start_id, "")
+        lic = await get_user_license(user_id)
+        if not lic:
+            return
         
         for tgt in manual_targets:
-            target_info = await get_target_by_id(user_id, tgt)
+            target_info = await get_target_by_id(lic, tgt)
             if not target_info: continue
             append_text = target_info[1]
             final_text = f"{original_caption}\n\n{append_text}" if original_caption else append_text
@@ -775,8 +778,15 @@ async def receive_edited_caption(update: Update, context: ContextTypes.DEFAULT_T
         await update.message.reply_text("خطا در سیستم. دوباره تلاش کنید.", reply_markup=get_main_keyboard(user_id))
         return CHOOSING
 
+    # 👇 دریافت لایسنس کاربر در اینجا اضافه شد
+    lic = await get_user_license(user_id)
+    if not lic:
+        await update.message.reply_text("❌ لایسنس معتبری برای شما یافت نشد.", reply_markup=get_main_keyboard(user_id))
+        return CHOOSING
+
     src_id = edit_data['src_id']
-    mappings = await get_mappings(user_id, src_id)
+    # 👇 به جای user_id، حالا lic را پاس می‌دهیم
+    mappings = await get_mappings(lic, src_id)
     manual_targets = [m[0] for m in mappings if m[1] == 'manual']
 
     if not manual_targets:
@@ -787,7 +797,8 @@ async def receive_edited_caption(update: Update, context: ContextTypes.DEFAULT_T
         if edit_data['type'] == 'sgl':
             msg_id = edit_data['msg_id']
             for tgt in manual_targets:
-                target_info = await get_target_by_id(user_id, tgt)
+                # 👇 تغییر مهم: استفاده از lic به جای user_id
+                target_info = await get_target_by_id(lic, tgt)
                 if not target_info: continue
                 app_text = target_info[1]
                 final_text = f"{new_text}\n\n{app_text}"
@@ -804,7 +815,8 @@ async def receive_edited_caption(update: Update, context: ContextTypes.DEFAULT_T
             end_id = edit_data['end_id']
             
             for tgt in manual_targets:
-                target_info = await get_target_by_id(user_id, tgt)
+                # 👇 تغییر مهم دوم: استفاده از lic به جای user_id برای آلبوم‌ها
+                target_info = await get_target_by_id(lic, tgt)
                 if not target_info: continue
                 app_text = target_info[1]
                 final_text = f"{new_text}\n\n{app_text}"
@@ -918,7 +930,14 @@ async def admin_inline_callback(update: Update, context: ContextTypes.DEFAULT_TY
             reply_markup=cancel_keyboard, parse_mode='Markdown'
         )
         return EDIT_LIC_USERS
-        
+    elif data.startswith("togglelic_"):
+        lic_key = data.split("_")[1]
+        new_status = await toggle_license_status(lic_key)
+        if new_status is not None:
+            await query.answer(f"وضعیت تغییر کرد به: {'فعال' if new_status else 'غیرفعال'}", show_alert=True)
+            # رفرش کردن بصری پیام امکان‌پذیر است، اما برای سادگی فعلا پیغام میدیم.
+        return CHOOSING
+       
     elif data.startswith("dellic_"):
         lic_key = data.split("_")[1]
         users_revoked = await delete_license(lic_key) # دریافت لیست کل کاربران
@@ -1005,7 +1024,8 @@ conv_handler = ConversationHandler(
         CHOOSING: [
             MessageHandler(filters.TEXT & ~filters.COMMAND, handle_choice),
             CallbackQueryHandler(target_inline_callback, pattern="^(editsig_|deltgt_|editbalesig_|delbaletgt_|editeitaasig_|deleitaatgt_)"),
-            CallbackQueryHandler(admin_inline_callback, pattern="^(editlic_|dellic_)")
+            CallbackQueryHandler(admin_inline_callback, pattern="^(editlic_|dellic_|togglelic_)"),
+            CallbackQueryHandler(inline_callback, pattern="^(pub_|edit_|ignore|delsrc_|tgtsrc_|setmap_|close_menu|delword_|delforbid_action)")
         ],
         ASK_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_name)],
         ASK_LICENSE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_license)],
@@ -1033,9 +1053,9 @@ conv_handler = ConversationHandler(
         EDIT_LIC_USERS: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_edit_lic_users)],
         EDIT_LIC_SOURCES: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_edit_lic_sources)],
         EDIT_LIC_TARGETS: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_edit_lic_targets)],
+        ASK_LICENSE_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_license_name)],
     },
     fallbacks=[CommandHandler("start", start_cmd)]
 )
 
 bot.add_handler(conv_handler)
-bot.add_handler(CallbackQueryHandler(inline_callback, pattern="^(pub_|edit_|ignore|delsrc_|tgtsrc_|setmap_|deltgt_|delbaletgt_|editbalesig_|close_menu|delword_|delforbid_action)"))
