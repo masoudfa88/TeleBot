@@ -210,7 +210,7 @@ def process_eitaa_message(text, file_paths, chat_id):
         time.sleep(2)
         
         LOGGER.info(f"🔄 [Eitaa] Refreshing the page for @{chat_id} to prevent race conditions...")
-        br.refresh()
+        # br.refresh()
         
         try:
             # منتظر ماندن برای لود شدن کامل دکمه پیوست در کانال جدید
