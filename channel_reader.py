@@ -123,11 +123,13 @@ async def send_tg_album_with_retry(tgt, downloaded_files, final_auto_caption):
             return True
         except Exception as e:
             LOGGER.warning(f"⚠️ TG Album Timeout for {tgt} (Attempt {attempt+1}/3): {e}")
-            if attempt == 2: LOGGER.error(f"❌ Failed to send album to {tgt}.")
-            
+            if attempt == 2: 
+                LOGGER.error(f"❌ Failed to send album to {tgt}.")
+                return False            
             else: await asyncio.sleep(3)
         finally:
             for f in opened_files: f.close()
+    return False
 
 async def send_tg_manual_album_with_retry(user_id, downloaded_files, clean_caption, ch_title, bot_api_from_chat_id):
     for attempt in range(3):
@@ -157,13 +159,16 @@ async def send_tg_manual_album_with_retry(user_id, downloaded_files, clean_capti
                         [InlineKeyboardButton("✏️ تغییر و انتشار", callback_data=f"edit_alb_{start_id}_{end_id}_{bot_api_from_chat_id}")]
                     ])
                     await bot.bot.send_message(chat_id=user_id, text="👆 عملیات برای آلبوم بالا:", reply_markup=reply_markup)
-            return
+            return True
         except Exception as e:
             LOGGER.warning(f"⚠️ TG Manual Album Error for {user_id} (Attempt {attempt+1}/3): {e}")
-            if attempt == 2: LOGGER.error(f"❌ Failed manual album to {user_id}.")
+            if attempt == 2: 
+                LOGGER.error(f"❌ Failed manual album to {user_id}.")
+                return False
             else: await asyncio.sleep(3)
         finally:
             for f in opened_files: f.close()
+    return False
 
 async def send_tg_single_with_retry(tgt, file_path, file_type, text_caption, msg_obj=None):
     for attempt in range(3):
@@ -178,11 +183,14 @@ async def send_tg_single_with_retry(tgt, file_path, file_type, text_caption, msg
                         await bot.bot.send_document(chat_id=tgt, document=f, filename=fname, caption=text_caption, read_timeout=300.0, write_timeout=300.0)
             else:
                 await bot.bot.send_message(chat_id=tgt, text=text_caption)
-            return
+            return True
         except Exception as e:
             LOGGER.warning(f"⚠️ TG Single Timeout for {tgt} (Attempt {attempt+1}/3): {e}")
-            if attempt == 2: LOGGER.error(f"❌ Failed single msg to {tgt}.")
+            if attempt == 2: 
+                LOGGER.error(f"❌ Failed single msg to {tgt}.")
+                return False
             else: await asyncio.sleep(3)
+    return False
 
 async def send_tg_manual_single_with_retry(user_id, file_path, file_type, clean_text, ch_title, bot_api_from_chat_id, msg_obj=None):
     for attempt in range(3):
@@ -202,12 +210,14 @@ async def send_tg_manual_single_with_retry(user_id, file_path, file_type, clean_
                         await bot.bot.send_document(chat_id=user_id, document=f, filename=fname, caption=clean_text, reply_markup=reply_markup, read_timeout=300.0, write_timeout=300.0)
             else:
                 await bot.bot.send_message(chat_id=user_id, text=clean_text, reply_markup=reply_markup)
-            return
+            return True
         except Exception as e:
             LOGGER.warning(f"⚠️ TG Manual Single Error for {user_id} (Attempt {attempt+1}/3): {e}")
-            if attempt == 2: LOGGER.error(f"❌ Failed manual single msg to {user_id}.")
+            if attempt == 2: 
+                LOGGER.error(f"❌ Failed manual single msg to {user_id}.")
+                return False
             else: await asyncio.sleep(3)
-
+    return False
 # =======================================================
 # توابع فیلترینگ و اجرای اصلی برنامه
 # =======================================================
