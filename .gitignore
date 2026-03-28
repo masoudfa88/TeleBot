@@ -3,6 +3,7 @@ build/
 dist/
 temp_downloads/
 eitaa_test_profile/
+eitaa_server_profile
 
 .env
 anon.session

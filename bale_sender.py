@@ -29,7 +29,7 @@ async def send_to_bale(text: str = None, file_path: str = None, file_type: str =
     if not BALE_TOKEN or not chat_id:
         return False
 
-    timeout_settings = httpx.Timeout(300.0, connect=60.0)
+    timeout_settings = httpx.Timeout(45.0, connect=15.0)
     async with httpx.AsyncClient(timeout=timeout_settings) as client:
         try:
             if not file_path:
@@ -81,7 +81,7 @@ async def send_album_to_bale(media_items: list, chat_id: str = None):
         return False
 
     url = f"{BALE_API_URL}/sendMediaGroup"
-    timeout_settings = httpx.Timeout(400.0, connect=60.0)
+    timeout_settings = httpx.Timeout(90.0, connect=15.0)
     
     async with httpx.AsyncClient(timeout=timeout_settings) as client:
         for attempt in range(3):
