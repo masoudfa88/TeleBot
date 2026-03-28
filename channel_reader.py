@@ -24,6 +24,10 @@ from thefuzz import fuzz
 from bale_sender import send_to_bale, send_album_to_bale
 from eitaa_sender import send_to_eitaa, send_album_to_eitaa, get_driver as get_eitaa_driver
 
+telegram_queue = asyncio.Queue()
+bale_queue = asyncio.Queue()
+eitaa_queue = asyncio.Queue()
+
 def resource_path(relative_path):
     try:
         base_path = sys._MEIPASS
@@ -289,12 +293,84 @@ async def periodic_cache_cleanup():
             LOGGER.info("🧹 کش پیام‌های قدیمی (بیش از 3 ساعت) پاکسازی شد.")
         except Exception as e:
             LOGGER.error(f"خطا در پاکسازی کش: {e}")
+# =======================================================
+# کارگرهای پس‌زمینه (Workers) برای ارسال پیام‌ها
+# =======================================================
+async def telegram_worker():
+    while True:
+        task = await telegram_queue.get()
+        try:
+            if task['action'] == 'single':
+                success = await send_tg_single_with_retry(task['tgt'], task['file_path'], task['file_type'], task['text'], task.get('msg'))
+                if success: await increment_stat(task['lic_key'], task['source_id'], 'tg_sent_count', 1)
+            elif task['action'] == 'album':
+                success = await send_tg_album_with_retry(task['tgt'], task['downloaded_files'], task['text'])
+                if success: await increment_stat(task['lic_key'], task['source_id'], 'tg_sent_count', 1)
+            elif task['action'] == 'manual_single':
+                success = await send_tg_manual_single_with_retry(task['uid'], task['file_path'], task['file_type'], task['text'], task['ch_title'], task['bot_api_from_chat_id'], task.get('msg'))
+                if success: await increment_stat(task['lic_key'], task['source_id'], 'tg_sent_count', 1)
+            elif task['action'] == 'manual_album':
+                success = await send_tg_manual_album_with_retry(task['uid'], task['downloaded_files'], task['text'], task['ch_title'], task['bot_api_from_chat_id'])
+                if success: await increment_stat(task['lic_key'], task['source_id'], 'tg_sent_count', 1)
+        except Exception as e:
+            LOGGER.error(f"❌ خطای TG Worker: {e}")
+        finally:
+            telegram_queue.task_done()
+            await asyncio.sleep(2)  # ⏳ استراحت ۲ ثانیه‌ای تلگرام
 
+async def bale_worker():
+    while True:
+        task = await bale_queue.get()
+        try:
+            if task['action'] == 'single':
+                success = await send_to_bale(text=task['text'], file_path=task['file_path'], file_type=task['file_type'], filename=task['filename'], chat_id=task['tgt'])
+                if success: await increment_stat(task['lic_key'], task['source_id'], 'bale_sent_count', 1)
+            elif task['action'] == 'album':
+                success = await send_album_to_bale(task['media_items'], chat_id=task['tgt'])
+                if success: await increment_stat(task['lic_key'], task['source_id'], 'bale_sent_count', 1)
+        except Exception as e:
+            LOGGER.error(f"❌ خطای Bale Worker: {e}")
+        finally:
+            bale_queue.task_done()
+            await asyncio.sleep(3)  # ⏳ استراحت ۳ ثانیه‌ای بله
+
+async def eitaa_worker():
+    while True:
+        task = await eitaa_queue.get()
+        try:
+            if task['action'] == 'single':
+                success = await send_to_eitaa(text=task['text'], file_path=task['file_path'], file_type=task['file_type'], filename=task['filename'], chat_id=task['tgt'])
+                if success: await increment_stat(task['lic_key'], task['source_id'], 'eitaa_sent_count', 1)
+            elif task['action'] == 'album':
+                success = await send_album_to_eitaa(task['media_items'], chat_id=task['tgt'])
+                if success: await increment_stat(task['lic_key'], task['source_id'], 'eitaa_sent_count', 1)
+        except Exception as e:
+            LOGGER.error(f"❌ خطای Eitaa Worker: {e}")
+        finally:
+            eitaa_queue.task_done()
+            await asyncio.sleep(5)  # ⏳ استراحت ۵ ثانیه‌ای ایتا
+
+async def periodic_temp_cleanup():
+    # این تابع هر ۱ ساعت اجرا می‌شود و فایل‌های موقتی که بیش از ۱ ساعت از دانلودشان گذشته را پاک می‌کند
+    while True:
+        await asyncio.sleep(3600)
+        try:
+            now = time.time()
+            count = 0
+            for f in os.listdir(TEMP_DIR):
+                f_path = os.path.join(TEMP_DIR, f)
+                if os.path.isfile(f_path) and os.stat(f_path).st_mtime < now - 3600:
+                    os.remove(f_path)
+                    count += 1
+            if count > 0:
+                LOGGER.info(f"🧹 تعداد {count} فایل موقت قدیمی پاکسازی شد.")
+        except Exception as e:
+            LOGGER.error(f"خطا در پاکسازی Temp: {e}")
 # =======================================================
 # توابع پردازش جدید (سیستم Polling)
 # =======================================================
 
-async def process_single_message_task(msg, bot_api_from_chat_id, subscribers_licenses, all_send_tasks):
+async def process_single_message_task(msg, bot_api_from_chat_id, subscribers_licenses):
     for lic_key in subscribers_licenses:
         await increment_stat(lic_key, str(bot_api_from_chat_id), 'fetched_count', 1)
 
@@ -343,57 +419,34 @@ async def process_single_message_task(msg, bot_api_from_chat_id, subscribers_lic
                 except Exception as e:
                     LOGGER.error(f"❌ خطا در دانلود فایل تکی: {e}")
 
+            # --- تلگرام ---
             target_info = await get_target_by_id(lic_key, tgt)
-            if not target_info: continue
-            app_text = target_info[1]
-            final_auto_text = f"{clean_text_filtered}\n\n{app_text}" if clean_text_filtered else app_text
-            
-            all_send_tasks.append(track_task(send_tg_single_with_retry(tgt, file_path, file_type, final_auto_text, msg), lic_key, str(bot_api_from_chat_id), 'tg_sent_count'))
-            await add_to_cache(lic_key, str(tgt), unique_id, current_phash_str, norm_text_for_cache)
+            if target_info:
+                app_text = target_info[1]
+                final_auto_text = f"{clean_text_filtered}\n\n{app_text}" if clean_text_filtered else app_text
+                # 📥 قرار دادن در صف تلگرام
+                await telegram_queue.put({'action': 'single', 'tgt': tgt, 'file_path': file_path, 'file_type': file_type, 'text': final_auto_text, 'msg': msg, 'lic_key': lic_key, 'source_id': str(bot_api_from_chat_id)})
+                await add_to_cache(lic_key, str(tgt), unique_id, current_phash_str, norm_text_for_cache)
 
             # --- بله ---
-            if auto_targets: 
-                bale_targets = await get_bale_targets(lic_key)
-                for bale_tgt, bale_app_text in bale_targets:
-                    if await check_target_duplicate(lic_key, f"bale_{bale_tgt}", clean_text_filtered, unique_id, current_phash_str):
-                        continue
-                    
-                    if msg.media and not DIRECT_COPY and not media_downloaded:
-                        try:
-                            file_path = await client.download_media(msg, file=os.path.join(TEMP_DIR, f"single_{bot_api_from_chat_id}_{msg.id}"))
-                            if msg.photo: file_type = 'photo'
-                            elif msg.video: file_type = 'video'
-                            elif msg.audio: file_type = 'audio'
-                            elif msg.document: file_type = 'document'
-                            media_downloaded = True
-                        except Exception: pass
-    
-                    final_bale_text = f"{clean_text_filtered}\n\n{bale_app_text}" if clean_text_filtered else bale_app_text
-                    fname = msg.file.name if hasattr(msg, 'file') and msg.file else None
-                    all_send_tasks.append(track_task(send_to_bale(text=final_bale_text, file_path=file_path, file_type=file_type, filename=fname, chat_id=bale_tgt), lic_key, str(bot_api_from_chat_id), 'bale_sent_count'))
-                    await add_to_cache(lic_key, f"bale_{bale_tgt}", unique_id, current_phash_str, norm_text_for_cache)
+            bale_targets = await get_bale_targets(lic_key)
+            for bale_tgt, bale_app_text in bale_targets:
+                if await check_target_duplicate(lic_key, f"bale_{bale_tgt}", clean_text_filtered, unique_id, current_phash_str): continue
+                final_bale_text = f"{clean_text_filtered}\n\n{bale_app_text}" if clean_text_filtered else bale_app_text
+                fname = msg.file.name if hasattr(msg, 'file') and msg.file else None
+                # 📥 قرار دادن در صف بله
+                await bale_queue.put({'action': 'single', 'tgt': bale_tgt, 'file_path': file_path, 'file_type': file_type, 'filename': fname, 'text': final_bale_text, 'lic_key': lic_key, 'source_id': str(bot_api_from_chat_id)})
+                await add_to_cache(lic_key, f"bale_{bale_tgt}", unique_id, current_phash_str, norm_text_for_cache)
                     
             # --- ایتا ---
-            if auto_targets:
-                eitaa_targets = await get_eitaa_targets(lic_key)
-                for eitaa_tgt, eitaa_app_text in eitaa_targets:
-                    if await check_target_duplicate(lic_key, f"eitaa_{eitaa_tgt}", clean_text_filtered, unique_id, current_phash_str):
-                        continue
-                    
-                    if msg.media and not DIRECT_COPY and not media_downloaded:
-                        try:
-                            file_path = await client.download_media(msg, file=os.path.join(TEMP_DIR, f"single_{bot_api_from_chat_id}_{msg.id}"))
-                            if msg.photo: file_type = 'photo'
-                            elif msg.video: file_type = 'video'
-                            elif msg.audio: file_type = 'audio'
-                            elif msg.document: file_type = 'document'
-                            media_downloaded = True
-                        except Exception: pass
-    
-                    final_eitaa_text = f"{clean_text_filtered}\n\n{eitaa_app_text}" if clean_text_filtered else eitaa_app_text
-                    fname = msg.file.name if hasattr(msg, 'file') and msg.file else None
-                    all_send_tasks.append(track_task(send_to_eitaa(text=final_eitaa_text, file_path=file_path, file_type=file_type, filename=fname, chat_id=eitaa_tgt), lic_key, str(bot_api_from_chat_id), 'eitaa_sent_count'))
-                    await add_to_cache(lic_key, f"eitaa_{eitaa_tgt}", unique_id, current_phash_str, norm_text_for_cache)
+            eitaa_targets = await get_eitaa_targets(lic_key)
+            for eitaa_tgt, eitaa_app_text in eitaa_targets:
+                if await check_target_duplicate(lic_key, f"eitaa_{eitaa_tgt}", clean_text_filtered, unique_id, current_phash_str): continue
+                final_eitaa_text = f"{clean_text_filtered}\n\n{eitaa_app_text}" if clean_text_filtered else eitaa_app_text
+                fname = msg.file.name if hasattr(msg, 'file') and msg.file else None
+                # 📥 قرار دادن در صف ایتا
+                await eitaa_queue.put({'action': 'single', 'tgt': eitaa_tgt, 'file_path': file_path, 'file_type': file_type, 'filename': fname, 'text': final_eitaa_text, 'lic_key': lic_key, 'source_id': str(bot_api_from_chat_id)})
+                await add_to_cache(lic_key, f"eitaa_{eitaa_tgt}", unique_id, current_phash_str, norm_text_for_cache)
 
         if manual_targets:
             if msg.media and not DIRECT_COPY and not media_downloaded:
@@ -408,7 +461,7 @@ async def process_single_message_task(msg, bot_api_from_chat_id, subscribers_lic
                 
             users = await get_users_of_license(lic_key)
             for uid in users:
-                all_send_tasks.append(track_task(send_tg_manual_single_with_retry(uid, file_path, file_type, clean_text_filtered, ch_title, bot_api_from_chat_id, msg), lic_key, str(bot_api_from_chat_id), 'tg_sent_count'))
+                await telegram_queue.put({'action': 'manual_single', 'uid': uid, 'file_path': file_path, 'file_type': file_type, 'text': clean_text_filtered, 'ch_title': ch_title, 'bot_api_from_chat_id': bot_api_from_chat_id, 'msg': msg, 'lic_key': lic_key, 'source_id': str(bot_api_from_chat_id)})
     
     return file_path
 # =======================================================
@@ -429,7 +482,7 @@ async def get_message_media_info(client, message):
             LOGGER.warning(f"⚠️ Could not generate thumbnail hash for media {unique_id}: {e}")
     return unique_id, current_phash_str
 
-async def process_album_task(album_msgs, bot_api_from_chat_id, subscribers_licenses, all_send_tasks):
+async def process_album_task(album_msgs, bot_api_from_chat_id, subscribers_licenses):
     for lic_key in subscribers_licenses:
         await increment_stat(lic_key, str(bot_api_from_chat_id), 'fetched_count', 1)
 
@@ -464,8 +517,7 @@ async def process_album_task(album_msgs, bot_api_from_chat_id, subscribers_licen
         manual_targets = [m[0] for m in mappings if m[1] == 'manual']
 
         for tgt in auto_targets:
-            if await check_target_duplicate(lic_key, str(tgt), clean_caption, unique_id, current_phash_str):
-                continue
+            if await check_target_duplicate(lic_key, str(tgt), clean_caption, unique_id, current_phash_str): continue
 
             if not DIRECT_COPY and not media_downloaded:
                 for m in album_msgs:
@@ -477,56 +529,31 @@ async def process_album_task(album_msgs, bot_api_from_chat_id, subscribers_licen
             
             if not downloaded_files and not DIRECT_COPY: continue
 
+            # --- تلگرام ---
             target_info = await get_target_by_id(lic_key, tgt)
-            if not target_info: continue
-            app_text = target_info[1]
-            final_auto_caption = f"{clean_caption}\n\n{app_text}" if clean_caption else app_text
-            
-            all_send_tasks.append(track_task(send_tg_album_with_retry(tgt, downloaded_files, final_auto_caption), lic_key, str(bot_api_from_chat_id), 'tg_sent_count'))
-            await add_to_cache(lic_key, str(tgt), unique_id, current_phash_str, norm_text_for_cache)
+            if target_info:
+                app_text = target_info[1]
+                final_auto_caption = f"{clean_caption}\n\n{app_text}" if clean_caption else app_text
+                await telegram_queue.put({'action': 'album', 'tgt': tgt, 'downloaded_files': downloaded_files, 'text': final_auto_caption, 'lic_key': lic_key, 'source_id': str(bot_api_from_chat_id)})
+                await add_to_cache(lic_key, str(tgt), unique_id, current_phash_str, norm_text_for_cache)
 
             # --- بله ---
-            if auto_targets:
-                bale_targets = await get_bale_targets(lic_key)
-                for bale_tgt, bale_app_text in bale_targets:
-                    if await check_target_duplicate(lic_key, f"bale_{bale_tgt}", clean_caption, unique_id, current_phash_str): continue
-                    
-                    if not DIRECT_COPY and not media_downloaded:
-                        for m in album_msgs:
-                            try:
-                                path = await client.download_media(m, file=os.path.join(TEMP_DIR, f"album_{bot_api_from_chat_id}_{m.grouped_id}_{m.id}"))
-                                if path: downloaded_files.append({"msg": m, "path": path})
-                            except Exception: pass
-                        media_downloaded = True
-                    
-                    if not downloaded_files and not DIRECT_COPY: continue
-    
-                    final_bale_caption = f"{clean_caption}\n\n{bale_app_text}" if clean_caption else bale_app_text
-                    bale_media_items = [{'type': 'photo' if item["msg"].photo else 'video', 'path': item["path"], 'caption': final_bale_caption if i == 0 else None} for i, item in enumerate(downloaded_files)]
-                    all_send_tasks.append(track_task(send_album_to_bale(bale_media_items, chat_id=bale_tgt), lic_key, str(bot_api_from_chat_id), 'bale_sent_count'))
-                    await add_to_cache(lic_key, f"bale_{bale_tgt}", unique_id, current_phash_str, norm_text_for_cache)
+            bale_targets = await get_bale_targets(lic_key)
+            for bale_tgt, bale_app_text in bale_targets:
+                if await check_target_duplicate(lic_key, f"bale_{bale_tgt}", clean_caption, unique_id, current_phash_str): continue
+                final_bale_caption = f"{clean_caption}\n\n{bale_app_text}" if clean_caption else bale_app_text
+                bale_media_items = [{'type': 'photo' if item["msg"].photo else 'video', 'path': item["path"], 'caption': final_bale_caption if i == 0 else None} for i, item in enumerate(downloaded_files)]
+                await bale_queue.put({'action': 'album', 'tgt': bale_tgt, 'media_items': bale_media_items, 'lic_key': lic_key, 'source_id': str(bot_api_from_chat_id)})
+                await add_to_cache(lic_key, f"bale_{bale_tgt}", unique_id, current_phash_str, norm_text_for_cache)
                     
             # --- ایتا ---
-            if auto_targets:
-                eitaa_targets = await get_eitaa_targets(lic_key)
-                for eitaa_tgt, eitaa_app_text in eitaa_targets:
-                    if await check_target_duplicate(lic_key, f"eitaa_{eitaa_tgt}", clean_caption, unique_id, current_phash_str): continue
-                    
-                    if not DIRECT_COPY and not media_downloaded:
-                        for m in album_msgs:
-                            try:
-                                path = await client.download_media(m, file=os.path.join(TEMP_DIR, f"album_{bot_api_from_chat_id}_{m.grouped_id}_{m.id}"))
-                                if path: downloaded_files.append({"msg": m, "path": path})
-                            except Exception: pass
-                        media_downloaded = True
-                    
-                    if not downloaded_files and not DIRECT_COPY: continue
-    
-                    final_eitaa_caption = f"{clean_caption}\n\n{eitaa_app_text}" if clean_caption else eitaa_app_text
-                    eitaa_media_items = [{'type': 'photo' if item["msg"].photo else 'video', 'path': item["path"], 'caption': final_eitaa_caption if i == 0 else None} for i, item in enumerate(downloaded_files)]
-                    
-                    all_send_tasks.append(track_task(send_album_to_eitaa(eitaa_media_items, chat_id=eitaa_tgt), lic_key, str(bot_api_from_chat_id), 'eitaa_sent_count'))
-                    await add_to_cache(lic_key, f"eitaa_{eitaa_tgt}", unique_id, current_phash_str, norm_text_for_cache)
+            eitaa_targets = await get_eitaa_targets(lic_key)
+            for eitaa_tgt, eitaa_app_text in eitaa_targets:
+                if await check_target_duplicate(lic_key, f"eitaa_{eitaa_tgt}", clean_caption, unique_id, current_phash_str): continue
+                final_eitaa_caption = f"{clean_caption}\n\n{eitaa_app_text}" if clean_caption else eitaa_app_text
+                eitaa_media_items = [{'type': 'photo' if item["msg"].photo else 'video', 'path': item["path"], 'caption': final_eitaa_caption if i == 0 else None} for i, item in enumerate(downloaded_files)]
+                await eitaa_queue.put({'action': 'album', 'tgt': eitaa_tgt, 'media_items': eitaa_media_items, 'lic_key': lic_key, 'source_id': str(bot_api_from_chat_id)})
+                await add_to_cache(lic_key, f"eitaa_{eitaa_tgt}", unique_id, current_phash_str, norm_text_for_cache)
         
         if manual_targets:
             if not DIRECT_COPY and not media_downloaded:
@@ -540,7 +567,7 @@ async def process_album_task(album_msgs, bot_api_from_chat_id, subscribers_licen
             if downloaded_files:
                 users = await get_users_of_license(lic_key)
                 for uid in users:
-                    all_send_tasks.append(track_task(send_tg_manual_album_with_retry(uid, downloaded_files, clean_caption, ch_title, bot_api_from_chat_id), lic_key, str(bot_api_from_chat_id), 'tg_sent_count'))
+                    await telegram_queue.put({'action': 'manual_album', 'uid': uid, 'downloaded_files': downloaded_files, 'text': clean_caption, 'ch_title': ch_title, 'bot_api_from_chat_id': bot_api_from_chat_id, 'lic_key': lic_key, 'source_id': str(bot_api_from_chat_id)})
 
     return downloaded_files
 
@@ -568,7 +595,7 @@ async def process_unread_dialogs():
             if (dialog.id in target_ids or bot_api_from_chat_id in target_ids) and dialog.unread_count > 0:
                 unread_count = dialog.unread_count
                 entity = dialog.entity
-                LOGGER.info(f"📥 {unread_count} پیام سین‌نخورده در کانال [{dialog.name}] یافت شد.")
+                LOGGER.info(f"📥 {unread_count} پیام سین‌نخورده در کانال [{dialog.name}] یافت شد و در صف قرار گرفت.")
                 
                 fetch_limit = min(unread_count, 15)
                 messages = await client.get_messages(entity, limit=fetch_limit)
@@ -576,7 +603,6 @@ async def process_unread_dialogs():
                     
                 messages.reverse()
                 
-                # --- تغییر مهم در اینجا ---
                 subscribers_licenses = await get_license_subscribers(bot_api_from_chat_id)
                 if not subscribers_licenses:
                     LOGGER.info(f"⚠️ کانال [{dialog.name}] هیچ لایسنس فعالی ندارد. فقط سین زده می‌شود.")
@@ -593,23 +619,13 @@ async def process_unread_dialogs():
                         albums_dict[msg.grouped_id].append(msg)
                     else:
                         singles.append(msg)
-
-                all_send_tasks = []
-                files_to_remove = []
                 
+                # فقط پیام‌ها را فیلتر کرده و در صف‌ها می‌اندازیم
                 for grp_id, album_msgs in albums_dict.items():
-                    dl_files = await process_album_task(album_msgs, bot_api_from_chat_id, subscribers_licenses, all_send_tasks)
-                    files_to_remove.extend([f["path"] for f in dl_files])
+                    await process_album_task(album_msgs, bot_api_from_chat_id, subscribers_licenses)
                     
                 for msg in singles:
-                    f_path = await process_single_message_task(msg, bot_api_from_chat_id, subscribers_licenses, all_send_tasks)
-                    if f_path: files_to_remove.append(f_path)
-                    
-                if all_send_tasks:
-                    await asyncio.gather(*all_send_tasks)
-                    
-                for path in files_to_remove:
-                    await safe_remove_file(path)
+                    await process_single_message_task(msg, bot_api_from_chat_id, subscribers_licenses)
                 
                 await client.send_read_acknowledge(entity)
                 
@@ -617,9 +633,13 @@ async def process_unread_dialogs():
         LOGGER.error(f"❌ خطا در پردازش گفتگوهای سین‌نخورده: {e}")
         
 async def main():
-    # await init_cache_table()
     asyncio.create_task(periodic_cache_cleanup())
+    asyncio.create_task(periodic_temp_cleanup())
     
+    asyncio.create_task(telegram_worker())
+    asyncio.create_task(bale_worker())
+    asyncio.create_task(eitaa_worker())
+        
     try:
         LOGGER.info("⏳ Checking the connection of the account to the server...")
         await client.start(phone_number)
