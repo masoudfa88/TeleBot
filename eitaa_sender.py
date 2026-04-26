@@ -25,10 +25,9 @@ def resource_path(relative_path):
 load_dotenv(resource_path(".env"))
 LOGGER = logging.getLogger(__name__)
 
-# --- متغیرهای گلوبال ---
 driver = None
 is_browser_open = False
-upload_counter = 0  # 👈 شمارشگر آپلود برای رفرش دوره‌ای
+upload_counter = 0
 
 def get_driver():
     global driver, is_browser_open
@@ -38,7 +37,6 @@ def get_driver():
             profile_path = os.path.join(os.path.abspath("."), "eitaa_server_profile")
             options.add_argument(f"user-data-dir={profile_path}")
             
-            # ⚠️ برای لاگین در سرور، این خط را موقتاً کامنت کنید
             # options.add_argument("--headless=new") 
             
             options.add_argument("--window-size=1920,1080") 
@@ -60,10 +58,6 @@ def get_driver():
         except Exception as e:
             LOGGER.error(f"❌ [Eitaa] Error starting browser: {e}")
     return driver
-
-# =========================================================
-# توابع ارسال بر پایه کد تست شده
-# =========================================================
 
 def verify_upload(br, tag_name, timeout_seconds):
     success = False
@@ -113,7 +107,9 @@ def send_media(br, file_paths_list, caption_text, tag_name, timeout=120):
     caption_box = br.find_elements(By.CSS_SELECTOR, "div[contenteditable='true']")[-1] 
     
     if caption_text:
-        br.execute_script("arguments[0].focus(); document.execCommand('insertText', false, arguments[1]);", caption_box, caption_text)
+        # تغییر مهم برای تزریق فرمت بولد در ایتا
+        html_caption = caption_text.replace('\n', '<br>')
+        br.execute_script("arguments[0].focus(); document.execCommand('insertHTML', false, arguments[1]);", caption_box, html_caption)
         
     caption_box.send_keys(" ")
     time.sleep(1)
@@ -152,10 +148,11 @@ def send_text(br, text_message, tag_name, timeout=30):
     LOGGER.info("✍️ [Eitaa] Injecting text and sending input signal...")
     js_script = """
         var box = arguments[0]; box.focus();
-        document.execCommand('insertText', false, arguments[1]);
+        document.execCommand('insertHTML', false, arguments[1]);
         box.dispatchEvent(new Event('input', { bubbles: true }));
     """
-    br.execute_script(js_script, chat_box, text_message)
+    html_text = text_message.replace('\n', '<br>')
+    br.execute_script(js_script, chat_box, html_text)
     chat_box.send_keys(" ") 
     time.sleep(1)
     
@@ -170,28 +167,18 @@ def send_text(br, text_message, tag_name, timeout=30):
     else:
         LOGGER.warning("⚠️ [Eitaa] Text message sent but no server confirmation received.")
         return False
-
-# =========================================================
-# موتور پردازش اصلی
-# =========================================================
-# =========================================================
-# موتور پردازش اصلی
-# =========================================================
 def process_eitaa_message(text, file_paths, chat_id):
     global upload_counter
     br = get_driver()
     if not br: return False
     
     try:
-        # =======================================================
-        # ♻️ سیستم بازیافت حافظه ایتا (رفرش هر ۵ آپلود)
-        # =======================================================
         if file_paths:
             if upload_counter >= 5:
                 LOGGER.info("🔄 [Eitaa] Reached 5 uploads limit. Refreshing page to clear browser memory...")
                 try:
                     br.get("https://web.eitaa.com/")
-                    time.sleep(5) # وقفه کوتاه برای اجرای اسکریپت‌های ایتا
+                    time.sleep(5)
                     WebDriverWait(br, 30).until(EC.presence_of_element_located((By.ID, "main-search")))
                     LOGGER.info("✅ [Eitaa] Page refreshed successfully.")
                 except Exception as e:
@@ -200,7 +187,6 @@ def process_eitaa_message(text, file_paths, chat_id):
                 upload_counter = 0 # ریست شمارشگر
             
             upload_counter += 1 # افزودن به شمارشگر آپلود
-        # =======================================================
 
         chat_id = chat_id.replace("@", "").replace("https://eitaa.com/", "").strip()
         LOGGER.info(f"🔄 [Eitaa] Switching channel to @{chat_id} ...")
@@ -213,10 +199,8 @@ def process_eitaa_message(text, file_paths, chat_id):
         time.sleep(2)
         
         try:
-            # منتظر ماندن برای لود شدن کامل دکمه پیوست در کانال جدید
             WebDriverWait(br, 15).until(EC.element_to_be_clickable((By.CSS_SELECTOR, ".attach-file")))
         except Exception:
-            # در صورتی که به هر دلیلی کانال لود نشد، یک بار دیگر صفحه را رفرش می‌کند
             LOGGER.warning("⚠️ [Eitaa] Attach button not found, trying one more refresh...")
             br.refresh()
             time.sleep(3)
@@ -227,20 +211,14 @@ def process_eitaa_message(text, file_paths, chat_id):
         
         if file_paths:
             timeout = 120 + (len(file_paths) * 30)
-            
-            # =======================================================
-            # ✂️ سیستم مدیریت محدودیت کپشن ایتا (حداکثر 1626 کاراکتر)
-            # =======================================================
             if len(caption) > 1626:
                 LOGGER.info(f"✂️ [Eitaa] Caption exceeds limit ({len(caption)} chars). Sending media without text first...")
                 media_success = send_media(br, file_paths, "", tag_name, timeout)
-                
                 if media_success:
                     LOGGER.info("📝 [Eitaa] Media sent. Now sending the long caption as a separate text message...")
                     time.sleep(2)
                     text_tag = f"data-tag-{uuid.uuid4().hex[:8]}"
                     return send_text(br, caption, text_tag, 30)
-                
                 return media_success
             else:
                 return send_media(br, file_paths, caption, tag_name, timeout)
@@ -251,13 +229,7 @@ def process_eitaa_message(text, file_paths, chat_id):
         LOGGER.error(f"❌ [Eitaa] Critical Error processing message: {e}")
         return False
 
-# =========================================================
-# رابط‌های فراخوانی برای سیستم مرکزی
-# =========================================================
-
-# 👇 متغیر و تابع جدید برای مدیریت صف مرورگر
 _eitaa_lock = None
-
 def get_eitaa_lock():
     global _eitaa_lock
     if _eitaa_lock is None:
@@ -270,22 +242,17 @@ async def send_to_eitaa(text: str = None, file_path: str = None, file_type: str 
     
     LOGGER.info(f"📤 [Eitaa] Queueing single message for {chat_id}")
     
-    # 👇 قفل کردن مرورگر برای جلوگیری از تداخل
     async with get_eitaa_lock():
         success = await asyncio.to_thread(process_eitaa_message, text, paths, chat_id)
-        
     return success
 
 async def send_album_to_eitaa(media_items: list, chat_id: str = None):
     if not chat_id or not media_items: return False
-    
     paths = [os.path.abspath(item['path']) for item in media_items]
     caption = media_items[0].get('caption', "")
     
     LOGGER.info(f"📤 [Eitaa] Queueing album ({len(paths)} files) for {chat_id}")
     
-    # 👇 قفل کردن مرورگر برای جلوگیری از تداخل
     async with get_eitaa_lock():
         success = await asyncio.to_thread(process_eitaa_message, caption, paths, chat_id)
-        
     return success

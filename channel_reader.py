@@ -2,6 +2,7 @@ import os
 import asyncio
 import httpx
 import socks 
+import html # اضافه شده
 from collections import deque
 from telethon.sync import TelegramClient, events
 from telethon.sessions import StringSession
@@ -12,7 +13,7 @@ from core import bot, LOGGER
 from database import get_license_subscribers, get_remove_words, get_channel_title, ALBUM_CAPTIONS, get_mappings
 from database import add_to_cache, get_recent_cache, cleanup_cache, get_forbidden_words
 from database import get_target_by_id, get_bale_targets, get_eitaa_targets, increment_stat, get_users_of_license
-from telegram.constants import ParseMode
+from telegram.constants import ParseMode # استفاده برای HTML
 import sys
 import json
 import re
@@ -83,27 +84,35 @@ client_params = {
 client = TelegramClient(StringSession(session_string) if session_string else "session_name", **client_params)
 
 processed_albums = deque(maxlen=200)
-# اجرای پردازش سنگین در ترد جداگانه
+
 def calculate_phash(thumb_bytes):
     img = Image.open(io.BytesIO(thumb_bytes))
     return str(imagehash.phash(img))
 
-# تابع حذف امن فایل (با Retry برای حل مشکل درگیری در ویندوز)
 async def safe_remove_file(file_path):
     for _ in range(4):
         try:
             await asyncio.to_thread(os.remove, file_path)
             break
         except OSError:
-            await asyncio.sleep(1.5) # صبر برای آزاد شدن فایل
+            await asyncio.sleep(1.5)
             
 async def track_task(coro, user_id, source_id, stat_type):
     success = await coro
     if success:
         await increment_stat(user_id, source_id, stat_type, 1)
-# =======================================================
-# توابع کمکی برای ارسال به همراه Retry (غیر مسدود کننده)
-# =======================================================
+
+# تابع جدید برای استخراج متن و حفظ کردن فقط تگ‌های بولد HTML
+def extract_bold_html(msg):
+    if not msg: return ""
+    html_str = getattr(msg, 'html', None)
+    if html_str is None:
+        return html.escape(getattr(msg, 'text', "") or "")
+    
+    html_str = html_str.replace("<strong>", "<b>").replace("</strong>", "</b>")
+    # حذف همه تگ‌ها به غیر از b
+    clean_html = re.sub(r'<(?!\/?b\b)[^>]+>', '', html_str)
+    return clean_html
 
 async def send_tg_album_with_retry(tgt, downloaded_files, final_auto_caption):
     for attempt in range(3):
@@ -117,10 +126,10 @@ async def send_tg_album_with_retry(tgt, downloaded_files, final_auto_caption):
                 f = open(path, 'rb')
                 opened_files.append(f)
                 if m.photo:
-                    media_group.append(InputMediaPhoto(media=f, caption=curr_cap))
+                    media_group.append(InputMediaPhoto(media=f, caption=curr_cap, parse_mode=ParseMode.HTML))
                     caption_added = True
                 elif m.video:
-                    media_group.append(InputMediaVideo(media=f, caption=curr_cap))
+                    media_group.append(InputMediaVideo(media=f, caption=curr_cap, parse_mode=ParseMode.HTML))
                     caption_added = True
             if media_group:
                 await bot.bot.send_media_group(chat_id=tgt, media=media_group, read_timeout=300.0, write_timeout=300.0)
@@ -147,10 +156,10 @@ async def send_tg_manual_album_with_retry(user_id, downloaded_files, clean_capti
                 f = open(path, 'rb')
                 opened_files.append(f)
                 if m.photo:
-                    media_group.append(InputMediaPhoto(media=f, caption=curr_cap))
+                    media_group.append(InputMediaPhoto(media=f, caption=curr_cap, parse_mode=ParseMode.HTML))
                     caption_added = True
                 elif m.video:
-                    media_group.append(InputMediaVideo(media=f, caption=curr_cap))
+                    media_group.append(InputMediaVideo(media=f, caption=curr_cap, parse_mode=ParseMode.HTML))
                     caption_added = True
             if media_group:
                 sent_msgs = await bot.bot.send_media_group(chat_id=user_id, media=media_group, read_timeout=300.0, write_timeout=300.0)
@@ -166,9 +175,7 @@ async def send_tg_manual_album_with_retry(user_id, downloaded_files, clean_capti
             return True
         except Exception as e:
             LOGGER.warning(f"⚠️ TG Manual Album Error for {user_id} (Attempt {attempt+1}/3): {e}")
-            if attempt == 2: 
-                LOGGER.error(f"❌ Failed manual album to {user_id}.")
-                return False
+            if attempt == 2: return False
             else: await asyncio.sleep(3)
         finally:
             for f in opened_files: f.close()
@@ -179,14 +186,14 @@ async def send_tg_single_with_retry(tgt, file_path, file_type, text_caption, msg
         try:
             if file_path:
                 with open(file_path, 'rb') as f:
-                    if file_type == 'photo': await bot.bot.send_photo(chat_id=tgt, photo=f, caption=text_caption, read_timeout=300.0, write_timeout=300.0)
-                    elif file_type == 'video': await bot.bot.send_video(chat_id=tgt, video=f, caption=text_caption, read_timeout=300.0, write_timeout=300.0)
-                    elif file_type == 'audio': await bot.bot.send_audio(chat_id=tgt, audio=f, caption=text_caption, read_timeout=300.0, write_timeout=300.0)
+                    if file_type == 'photo': await bot.bot.send_photo(chat_id=tgt, photo=f, caption=text_caption, parse_mode=ParseMode.HTML, read_timeout=300.0, write_timeout=300.0)
+                    elif file_type == 'video': await bot.bot.send_video(chat_id=tgt, video=f, caption=text_caption, parse_mode=ParseMode.HTML, read_timeout=300.0, write_timeout=300.0)
+                    elif file_type == 'audio': await bot.bot.send_audio(chat_id=tgt, audio=f, caption=text_caption, parse_mode=ParseMode.HTML, read_timeout=300.0, write_timeout=300.0)
                     elif file_type == 'document':
                         fname = msg_obj.file.name if (msg_obj and hasattr(msg_obj, 'file') and msg_obj.file) else "document.file"
-                        await bot.bot.send_document(chat_id=tgt, document=f, filename=fname, caption=text_caption, read_timeout=300.0, write_timeout=300.0)
+                        await bot.bot.send_document(chat_id=tgt, document=f, filename=fname, caption=text_caption, parse_mode=ParseMode.HTML, read_timeout=300.0, write_timeout=300.0)
             else:
-                await bot.bot.send_message(chat_id=tgt, text=text_caption)
+                await bot.bot.send_message(chat_id=tgt, text=text_caption, parse_mode=ParseMode.HTML)
             return True
         except Exception as e:
             LOGGER.warning(f"⚠️ TG Single Timeout for {tgt} (Attempt {attempt+1}/3): {e}")
@@ -206,14 +213,14 @@ async def send_tg_manual_single_with_retry(user_id, file_path, file_type, clean_
             ])
             if file_path:
                 with open(file_path, 'rb') as f:
-                    if file_type == 'photo': await bot.bot.send_photo(chat_id=user_id, photo=f, caption=clean_text, reply_markup=reply_markup, read_timeout=300.0, write_timeout=300.0)
-                    elif file_type == 'video': await bot.bot.send_video(chat_id=user_id, video=f, caption=clean_text, reply_markup=reply_markup, read_timeout=300.0, write_timeout=300.0)
-                    elif file_type == 'audio': await bot.bot.send_audio(chat_id=user_id, audio=f, caption=clean_text, reply_markup=reply_markup, read_timeout=300.0, write_timeout=300.0)
+                    if file_type == 'photo': await bot.bot.send_photo(chat_id=user_id, photo=f, caption=clean_text, parse_mode=ParseMode.HTML, reply_markup=reply_markup, read_timeout=300.0, write_timeout=300.0)
+                    elif file_type == 'video': await bot.bot.send_video(chat_id=user_id, video=f, caption=clean_text, parse_mode=ParseMode.HTML, reply_markup=reply_markup, read_timeout=300.0, write_timeout=300.0)
+                    elif file_type == 'audio': await bot.bot.send_audio(chat_id=user_id, audio=f, caption=clean_text, parse_mode=ParseMode.HTML, reply_markup=reply_markup, read_timeout=300.0, write_timeout=300.0)
                     elif file_type == 'document':
                         fname = msg_obj.file.name if (msg_obj and hasattr(msg_obj, 'file') and msg_obj.file) else "document.file"
-                        await bot.bot.send_document(chat_id=user_id, document=f, filename=fname, caption=clean_text, reply_markup=reply_markup, read_timeout=300.0, write_timeout=300.0)
+                        await bot.bot.send_document(chat_id=user_id, document=f, filename=fname, caption=clean_text, parse_mode=ParseMode.HTML, reply_markup=reply_markup, read_timeout=300.0, write_timeout=300.0)
             else:
-                await bot.bot.send_message(chat_id=user_id, text=clean_text, reply_markup=reply_markup)
+                await bot.bot.send_message(chat_id=user_id, text=clean_text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
             return True
         except Exception as e:
             LOGGER.warning(f"⚠️ TG Manual Single Error for {user_id} (Attempt {attempt+1}/3): {e}")
@@ -222,17 +229,11 @@ async def send_tg_manual_single_with_retry(user_id, file_path, file_type, clean_
                 return False
             else: await asyncio.sleep(3)
     return False
-# =======================================================
-# توابع فیلترینگ و اجرای اصلی برنامه
-# =======================================================
 
 async def apply_filters(text: str, license_key: str):
     if not text: return text
     
-    # اولویت ۱: حذف آیدی‌ها
     text = re.sub(r'@[a-zA-Z0-9_]+', '', text)
-    
-    # اولویت ۲: حذف لینک‌های پیشرفته
     url_pattern = r'(?i)(?:https?://|www\.)?(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}(?:/[^\s]*)?'
     text = re.sub(url_pattern, '', text)
     
@@ -243,14 +244,14 @@ async def apply_filters(text: str, license_key: str):
             pattern = re.compile(re.escape(word), re.IGNORECASE)
             text = pattern.sub("", text)
     
-    # مرتب‌سازی فاصله‌های اضافی
     text = re.sub(r'[ \t]+', ' ', text)
-    text = re.sub(r'(?:[^\w.!?،؛)\]"\'»]|\s)+$', '', text)
-    
+    # اصلاح شده تا در صورت استفاده از HTML تگ‌های ما در انتها پاک نشوند
+    text = re.sub(r'(?:[^\w.!?،؛)\]"\'»></]|\s)+$', '', text)
     return text.strip()
 
 def normalize_text(text: str) -> str:
     if not text: return ""
+    text = re.sub(r'<[^>]+>', ' ', text) # حذف تگ ها برای ذخیره سازگار در دیتابیس
     text = re.sub(r'http\S+|www.\S+', '', text)
     text = re.sub(r'@\w+', '', text)
     text = re.sub(r'[^\w\s]', ' ', text)
@@ -260,18 +261,18 @@ def normalize_text(text: str) -> str:
 
 def get_preview(text, n=4):
     if not text: return "[بدون متن]"
-    words = str(text).split()
+    text = re.sub(r'<[^>]+>', '', str(text)) # پاک کردن تگ در پیش نمایش
+    words = text.split()
     return " ".join(words[:n]) + ("..." if len(words) > n else "")
 
 async def check_target_duplicate(license_key: str, target_id: str, filtered_text: str, unique_id: str, current_phash_str: str) -> bool:
     norm_text = normalize_text(filtered_text)
-    # اضافه شدن license_key به فراخوانی دیتابیس
     recent_posts = await get_recent_cache(license_key, str(target_id)) 
     
     if norm_text and len(norm_text) > 15:
         for _, _, cached_text in recent_posts:
             if cached_text and len(cached_text) > 15:
-                if fuzz.ratio(norm_text, cached_text) >= 60: return True 
+                if fuzz.ratio(norm_text, cached_text) >= 40: return True 
 
     if unique_id:
         for cached_uid, _, _ in recent_posts:
@@ -293,9 +294,7 @@ async def periodic_cache_cleanup():
             LOGGER.info("🧹 کش پیام‌های قدیمی (بیش از 3 ساعت) پاکسازی شد.")
         except Exception as e:
             LOGGER.error(f"خطا در پاکسازی کش: {e}")
-# =======================================================
-# کارگرهای پس‌زمینه (Workers) برای ارسال پیام‌ها
-# =======================================================
+
 async def telegram_worker():
     while True:
         task = await telegram_queue.get()
@@ -316,7 +315,7 @@ async def telegram_worker():
             LOGGER.error(f"❌ خطای TG Worker: {e}")
         finally:
             telegram_queue.task_done()
-            await asyncio.sleep(2)  # ⏳ استراحت ۲ ثانیه‌ای تلگرام
+            await asyncio.sleep(2)
 
 async def bale_worker():
     while True:
@@ -332,7 +331,7 @@ async def bale_worker():
             LOGGER.error(f"❌ خطای Bale Worker: {e}")
         finally:
             bale_queue.task_done()
-            await asyncio.sleep(3)  # ⏳ استراحت ۳ ثانیه‌ای بله
+            await asyncio.sleep(3)
 
 async def eitaa_worker():
     while True:
@@ -348,10 +347,9 @@ async def eitaa_worker():
             LOGGER.error(f"❌ خطای Eitaa Worker: {e}")
         finally:
             eitaa_queue.task_done()
-            await asyncio.sleep(5)  # ⏳ استراحت ۵ ثانیه‌ای ایتا
+            await asyncio.sleep(5)
 
 async def periodic_temp_cleanup():
-    # این تابع هر ۱ ساعت اجرا می‌شود و فایل‌های موقتی که بیش از ۱ ساعت از دانلودشان گذشته را پاک می‌کند
     while True:
         await asyncio.sleep(3600)
         try:
@@ -374,7 +372,7 @@ async def process_single_message_task(msg, bot_api_from_chat_id, subscribers_lic
     for lic_key in subscribers_licenses:
         await increment_stat(lic_key, str(bot_api_from_chat_id), 'fetched_count', 1)
 
-    clean_text = msg.text or ""
+    clean_text = extract_bold_html(msg) # تغییر اصلی برای بولد
     unique_id, current_phash_str = await get_message_media_info(client, msg)
     
     file_path, file_type = None, None
@@ -419,32 +417,28 @@ async def process_single_message_task(msg, bot_api_from_chat_id, subscribers_lic
                 except Exception as e:
                     LOGGER.error(f"❌ خطا در دانلود فایل تکی: {e}")
 
-            # --- تلگرام ---
             target_info = await get_target_by_id(lic_key, tgt)
             if target_info:
-                app_text = target_info[1]
+                app_text = html.escape(target_info[1]) if target_info[1] else "" # اسکیپ امضا
                 final_auto_text = f"{clean_text_filtered}\n\n{app_text}" if clean_text_filtered else app_text
-                # 📥 قرار دادن در صف تلگرام
                 await telegram_queue.put({'action': 'single', 'tgt': tgt, 'file_path': file_path, 'file_type': file_type, 'text': final_auto_text, 'msg': msg, 'lic_key': lic_key, 'source_id': str(bot_api_from_chat_id)})
                 await add_to_cache(lic_key, str(tgt), unique_id, current_phash_str, norm_text_for_cache)
 
-            # --- بله ---
             bale_targets = await get_bale_targets(lic_key)
             for bale_tgt, bale_app_text in bale_targets:
                 if await check_target_duplicate(lic_key, f"bale_{bale_tgt}", clean_text_filtered, unique_id, current_phash_str): continue
-                final_bale_text = f"{clean_text_filtered}\n\n{bale_app_text}" if clean_text_filtered else bale_app_text
+                safe_bale_app_text = html.escape(bale_app_text) if bale_app_text else ""
+                final_bale_text = f"{clean_text_filtered}\n\n{safe_bale_app_text}" if clean_text_filtered else safe_bale_app_text
                 fname = msg.file.name if hasattr(msg, 'file') and msg.file else None
-                # 📥 قرار دادن در صف بله
                 await bale_queue.put({'action': 'single', 'tgt': bale_tgt, 'file_path': file_path, 'file_type': file_type, 'filename': fname, 'text': final_bale_text, 'lic_key': lic_key, 'source_id': str(bot_api_from_chat_id)})
                 await add_to_cache(lic_key, f"bale_{bale_tgt}", unique_id, current_phash_str, norm_text_for_cache)
                     
-            # --- ایتا ---
             eitaa_targets = await get_eitaa_targets(lic_key)
             for eitaa_tgt, eitaa_app_text in eitaa_targets:
                 if await check_target_duplicate(lic_key, f"eitaa_{eitaa_tgt}", clean_text_filtered, unique_id, current_phash_str): continue
-                final_eitaa_text = f"{clean_text_filtered}\n\n{eitaa_app_text}" if clean_text_filtered else eitaa_app_text
+                safe_eitaa_app_text = html.escape(eitaa_app_text) if eitaa_app_text else ""
+                final_eitaa_text = f"{clean_text_filtered}\n\n{safe_eitaa_app_text}" if clean_text_filtered else safe_eitaa_app_text
                 fname = msg.file.name if hasattr(msg, 'file') and msg.file else None
-                # 📥 قرار دادن در صف ایتا
                 await eitaa_queue.put({'action': 'single', 'tgt': eitaa_tgt, 'file_path': file_path, 'file_type': file_type, 'filename': fname, 'text': final_eitaa_text, 'lic_key': lic_key, 'source_id': str(bot_api_from_chat_id)})
                 await add_to_cache(lic_key, f"eitaa_{eitaa_tgt}", unique_id, current_phash_str, norm_text_for_cache)
 
@@ -464,9 +458,6 @@ async def process_single_message_task(msg, bot_api_from_chat_id, subscribers_lic
                 await telegram_queue.put({'action': 'manual_single', 'uid': uid, 'file_path': file_path, 'file_type': file_type, 'text': clean_text_filtered, 'ch_title': ch_title, 'bot_api_from_chat_id': bot_api_from_chat_id, 'msg': msg, 'lic_key': lic_key, 'source_id': str(bot_api_from_chat_id)})
     
     return file_path
-# =======================================================
-# سیستم مدیریت هوشمند کش بر اساس کانال مقصد
-# =======================================================
 
 async def get_message_media_info(client, message):
     unique_id, current_phash_str = None, None
@@ -486,7 +477,9 @@ async def process_album_task(album_msgs, bot_api_from_chat_id, subscribers_licen
     for lic_key in subscribers_licenses:
         await increment_stat(lic_key, str(bot_api_from_chat_id), 'fetched_count', 1)
 
-    caption = next((m.text for m in album_msgs if m.text), "")
+    caption_msg = next((m for m in album_msgs if getattr(m, 'text', None)), None)
+    caption = extract_bold_html(caption_msg) # تغییر برای بولد
+    
     first_media_msg = next((m for m in album_msgs if m.media), album_msgs[0])
     unique_id, current_phash_str = await get_message_media_info(client, first_media_msg)
 
@@ -529,28 +522,27 @@ async def process_album_task(album_msgs, bot_api_from_chat_id, subscribers_licen
             
             if not downloaded_files and not DIRECT_COPY: continue
 
-            # --- تلگرام ---
             target_info = await get_target_by_id(lic_key, tgt)
             if target_info:
-                app_text = target_info[1]
+                app_text = html.escape(target_info[1]) if target_info[1] else ""
                 final_auto_caption = f"{clean_caption}\n\n{app_text}" if clean_caption else app_text
                 await telegram_queue.put({'action': 'album', 'tgt': tgt, 'downloaded_files': downloaded_files, 'text': final_auto_caption, 'lic_key': lic_key, 'source_id': str(bot_api_from_chat_id)})
                 await add_to_cache(lic_key, str(tgt), unique_id, current_phash_str, norm_text_for_cache)
 
-            # --- بله ---
             bale_targets = await get_bale_targets(lic_key)
             for bale_tgt, bale_app_text in bale_targets:
                 if await check_target_duplicate(lic_key, f"bale_{bale_tgt}", clean_caption, unique_id, current_phash_str): continue
-                final_bale_caption = f"{clean_caption}\n\n{bale_app_text}" if clean_caption else bale_app_text
+                safe_bale_app_text = html.escape(bale_app_text) if bale_app_text else ""
+                final_bale_caption = f"{clean_caption}\n\n{safe_bale_app_text}" if clean_caption else safe_bale_app_text
                 bale_media_items = [{'type': 'photo' if item["msg"].photo else 'video', 'path': item["path"], 'caption': final_bale_caption if i == 0 else None} for i, item in enumerate(downloaded_files)]
                 await bale_queue.put({'action': 'album', 'tgt': bale_tgt, 'media_items': bale_media_items, 'lic_key': lic_key, 'source_id': str(bot_api_from_chat_id)})
                 await add_to_cache(lic_key, f"bale_{bale_tgt}", unique_id, current_phash_str, norm_text_for_cache)
                     
-            # --- ایتا ---
             eitaa_targets = await get_eitaa_targets(lic_key)
             for eitaa_tgt, eitaa_app_text in eitaa_targets:
                 if await check_target_duplicate(lic_key, f"eitaa_{eitaa_tgt}", clean_caption, unique_id, current_phash_str): continue
-                final_eitaa_caption = f"{clean_caption}\n\n{eitaa_app_text}" if clean_caption else eitaa_app_text
+                safe_eitaa_app_text = html.escape(eitaa_app_text) if eitaa_app_text else ""
+                final_eitaa_caption = f"{clean_caption}\n\n{safe_eitaa_app_text}" if clean_caption else safe_eitaa_app_text
                 eitaa_media_items = [{'type': 'photo' if item["msg"].photo else 'video', 'path': item["path"], 'caption': final_eitaa_caption if i == 0 else None} for i, item in enumerate(downloaded_files)]
                 await eitaa_queue.put({'action': 'album', 'tgt': eitaa_tgt, 'media_items': eitaa_media_items, 'lic_key': lic_key, 'source_id': str(bot_api_from_chat_id)})
                 await add_to_cache(lic_key, f"eitaa_{eitaa_tgt}", unique_id, current_phash_str, norm_text_for_cache)
@@ -580,8 +572,7 @@ async def process_unread_dialogs():
         target_ids = set()
         for ch in channels:
             ch_str = str(ch)
-            if ch_str.startswith("-100"):
-                target_ids.add(int(ch_str[4:]))
+            if ch_str.startswith("-100"): target_ids.add(int(ch_str[4:]))
             target_ids.add(int(ch_str))
             
         dialogs = await client.get_dialogs(limit=100)
@@ -620,7 +611,6 @@ async def process_unread_dialogs():
                     else:
                         singles.append(msg)
                 
-                # فقط پیام‌ها را فیلتر کرده و در صف‌ها می‌اندازیم
                 for grp_id, album_msgs in albums_dict.items():
                     await process_album_task(album_msgs, bot_api_from_chat_id, subscribers_licenses)
                     
@@ -635,7 +625,6 @@ async def process_unread_dialogs():
 async def main():
     asyncio.create_task(periodic_cache_cleanup())
     asyncio.create_task(periodic_temp_cleanup())
-    
     asyncio.create_task(telegram_worker())
     asyncio.create_task(bale_worker())
     asyncio.create_task(eitaa_worker())
@@ -649,7 +638,6 @@ async def main():
         LOGGER.error(f"❌ Account connection failed! Check proxy. Error: {e}")
         return 
 
-    # 🚀 باز کردن و آماده‌سازی سلنیوم ایتا در ابتدای اجرای ربات 
     try:
         LOGGER.info("🌐 [Eitaa] در حال راه‌اندازی مرورگر ایتا در پس‌زمینه... (این کار ممکن است چند ثانیه طول بکشد)")
         # اجرای سلنیوم در ترد مجزا تا روند اصلی متوقف نشود
@@ -670,10 +658,7 @@ async def main():
                 
             await asyncio.sleep(10)
 
-    # اجرای حلقه بی‌پایان در پس‌زمینه
     asyncio.create_task(polling_loop())
-    
-    # نگه داشتن سشن برای جلوگیری از قطع اتصال
     await client.run_until_disconnected()
 
 if __name__ == '__main__':

@@ -8,7 +8,8 @@ import asyncio
 
 def get_preview(text, n=4):
     if not text: return "[بدون متن]"
-    words = str(text).split()
+    text_clean = str(text).replace("<b>", "").replace("</b>", "")
+    words = text_clean.split()
     return " ".join(words[:n]) + ("..." if len(words) > n else "")
 
 def resource_path(relative_path):
@@ -21,7 +22,6 @@ def resource_path(relative_path):
 load_dotenv(resource_path(".env"))
 
 BALE_TOKEN = os.getenv("BALE_BOT_TOKEN")
-# channel = os.getenv("cannel")
 BALE_API_URL = f"https://tapi.bale.ai/bot{BALE_TOKEN}"
 LOGGER = logging.getLogger(__name__)
 
@@ -33,7 +33,7 @@ async def send_to_bale(text: str = None, file_path: str = None, file_type: str =
     async with httpx.AsyncClient(timeout=timeout_settings) as client:
         try:
             if not file_path:
-                payload = {"chat_id": chat_id, "text": text or ""}
+                payload = {"chat_id": chat_id, "text": text or "", "parse_mode": "HTML"} # پارس مد
                 for attempt in range(3):
                     try:
                         response = await client.post(f"{BALE_API_URL}/sendMessage", json=payload)
@@ -43,7 +43,7 @@ async def send_to_bale(text: str = None, file_path: str = None, file_type: str =
                         if attempt == 2: raise e
                         await asyncio.sleep(2)
             else:
-                data = {"chat_id": chat_id}
+                data = {"chat_id": chat_id, "parse_mode": "HTML"} # پارس مد
                 if text: data["caption"] = text
                 
                 if file_type == 'photo':
@@ -57,7 +57,6 @@ async def send_to_bale(text: str = None, file_path: str = None, file_type: str =
                 else:
                     return
 
-                # باز کردن فایل در داخل حلقه قرار گرفت تا در صورت خطا از ابتدا خوانده شود
                 for attempt in range(3):
                     try:
                         with open(file_path, 'rb') as f:
@@ -93,14 +92,13 @@ async def send_album_to_bale(media_items: list, chat_id: str = None):
                     file_type, file_path, caption = item['type'], item['path'], item.get('caption')
                     attach_name = f"file{idx}"
                     
-                    media_obj = {"type": file_type, "media": f"attach://{attach_name}"}
+                    media_obj = {"type": file_type, "media": f"attach://{attach_name}", "parse_mode": "HTML"} # پارس مد
                     if caption: media_obj["caption"] = caption
                     media_json.append(media_obj)
                     
                     mime = "image/jpeg" if file_type == "photo" else "video/mp4"
                     filename = f"{attach_name}.jpg" if file_type == "photo" else f"{attach_name}.mp4"
                     
-                    # فایل در هر بار تلاش دوباره و از ابتدا باز میشود
                     f = open(file_path, 'rb')
                     opened_files.append(f)
                     files[attach_name] = (filename, f, mime)
@@ -112,7 +110,6 @@ async def send_album_to_bale(media_items: list, chat_id: str = None):
                 preview = get_preview(first_caption)
                 LOGGER.info(f"✅ آلبوم با موفقیت به بله ({chat_id}) ارسال شد: '{preview}'")
                 return True
-                break # موفقیت و خروج از حلقه Retry
             except Exception as e:
                 if attempt == 2: 
                     LOGGER.error(f"❌ خطا در ارسال آلبوم به بله: {e}")

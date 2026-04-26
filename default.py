@@ -8,6 +8,8 @@ from database import *
 from channel_reader import client
 from telethon.tl.functions.channels import JoinChannelRequest
 from core import bot, LOGGER, OWNER_ID
+from telegram.constants import ParseMode
+import html
 
 ADMIN_ID = OWNER_ID
 
@@ -684,13 +686,13 @@ async def inline_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for tgt in manual_targets:
             target_info = await get_target_by_id(lic, tgt)
             if not target_info: continue
-            append_text = target_info[1]
+            append_text = html.escape(target_info[1]) if target_info[1] else "" # اسکیپ کاراکترهای امضا
             final_text = f"{original_text}\n\n{append_text}" if original_text else append_text
             
             if query.message.text: 
-                await context.bot.send_message(chat_id=tgt, text=final_text)
+                await context.bot.send_message(chat_id=tgt, text=final_text, parse_mode=ParseMode.HTML)
             else: 
-                await context.bot.copy_message(chat_id=tgt, from_chat_id=user_id, message_id=msg_id, caption=final_text)
+                await context.bot.copy_message(chat_id=tgt, from_chat_id=user_id, message_id=msg_id, caption=final_text, parse_mode=ParseMode.HTML)
         
         await query.edit_message_reply_markup(reply_markup=None)
         await query.message.reply_text("✅ پیام در کانال‌های مقصد تأییدشده منتشر شد.")
@@ -766,11 +768,14 @@ async def inline_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return WAITING_FOR_EDIT
 
 async def receive_edited_caption(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    new_text = update.message.text
+    import html # اضافه شده برای جلوگیری از خطای کاراکترهای امضا
+    
+    # دریافت متن جدید با حفظ فرمت‌های دستی کاربر (مثل کلمات بولد شده)
+    new_text = update.message.text_html or update.message.text or ""
     user_id = update.effective_user.id
     edit_data = context.user_data.get('editing_data')
     
-    if new_text == "بازگشت 🔙":
+    if update.message.text == "بازگشت 🔙":
         await update.message.reply_text("عملیات ویرایش لغو شد.", reply_markup=get_main_keyboard(user_id))
         return CHOOSING
 
@@ -778,14 +783,12 @@ async def receive_edited_caption(update: Update, context: ContextTypes.DEFAULT_T
         await update.message.reply_text("خطا در سیستم. دوباره تلاش کنید.", reply_markup=get_main_keyboard(user_id))
         return CHOOSING
 
-    # 👇 دریافت لایسنس کاربر در اینجا اضافه شد
     lic = await get_user_license(user_id)
     if not lic:
         await update.message.reply_text("❌ لایسنس معتبری برای شما یافت نشد.", reply_markup=get_main_keyboard(user_id))
         return CHOOSING
 
     src_id = edit_data['src_id']
-    # 👇 به جای user_id، حالا lic را پاس می‌دهیم
     mappings = await get_mappings(lic, src_id)
     manual_targets = [m[0] for m in mappings if m[1] == 'manual']
 
@@ -797,16 +800,19 @@ async def receive_edited_caption(update: Update, context: ContextTypes.DEFAULT_T
         if edit_data['type'] == 'sgl':
             msg_id = edit_data['msg_id']
             for tgt in manual_targets:
-                # 👇 تغییر مهم: استفاده از lic به جای user_id
                 target_info = await get_target_by_id(lic, tgt)
                 if not target_info: continue
-                app_text = target_info[1]
+                
+                # اسکیپ کردن امضا تا تداخل با HTML پیدا نکند
+                app_text = html.escape(target_info[1]) if target_info[1] else ""
                 final_text = f"{new_text}\n\n{app_text}"
                 try:
-                    await context.bot.copy_message(chat_id=tgt, from_chat_id=user_id, message_id=msg_id, caption=final_text)
+                    # اضافه شدن parse_mode=ParseMode.HTML
+                    await context.bot.copy_message(chat_id=tgt, from_chat_id=user_id, message_id=msg_id, caption=final_text, parse_mode=ParseMode.HTML)
                 except BadRequest as e:
                     if "Message to copy not found" in str(e) or "Caption can't be edited" in str(e):
-                        await context.bot.send_message(chat_id=tgt, text=final_text)
+                        # اضافه شدن parse_mode=ParseMode.HTML
+                        await context.bot.send_message(chat_id=tgt, text=final_text, parse_mode=ParseMode.HTML)
             
             await update.message.reply_text("✅ پیام با کپشن جدید در مقصدها منتشر شد!", reply_markup=get_main_keyboard(user_id))
 
@@ -815,14 +821,16 @@ async def receive_edited_caption(update: Update, context: ContextTypes.DEFAULT_T
             end_id = edit_data['end_id']
             
             for tgt in manual_targets:
-                # 👇 تغییر مهم دوم: استفاده از lic به جای user_id برای آلبوم‌ها
                 target_info = await get_target_by_id(lic, tgt)
                 if not target_info: continue
-                app_text = target_info[1]
+                
+                # اسکیپ کردن امضا
+                app_text = html.escape(target_info[1]) if target_info[1] else ""
                 final_text = f"{new_text}\n\n{app_text}"
 
                 try:
-                    await context.bot.edit_message_caption(chat_id=user_id, message_id=start_id, caption=final_text)
+                    # اضافه شدن parse_mode=ParseMode.HTML
+                    await context.bot.edit_message_caption(chat_id=user_id, message_id=start_id, caption=final_text, parse_mode=ParseMode.HTML)
                 except:
                     pass
 
@@ -837,7 +845,8 @@ async def receive_edited_caption(update: Update, context: ContextTypes.DEFAULT_T
                     )
             
             try:
-                await context.bot.edit_message_caption(chat_id=user_id, message_id=start_id, caption=new_text)
+                # اضافه شدن parse_mode=ParseMode.HTML
+                await context.bot.edit_message_caption(chat_id=user_id, message_id=start_id, caption=new_text, parse_mode=ParseMode.HTML)
             except:
                 pass
                 
