@@ -272,7 +272,7 @@ async def check_target_duplicate(license_key: str, target_id: str, filtered_text
     if norm_text and len(norm_text) > 15:
         for _, _, cached_text in recent_posts:
             if cached_text and len(cached_text) > 15:
-                if fuzz.ratio(norm_text, cached_text) >= 40: return True 
+                if fuzz.token_set_ratio(norm_text, cached_text) >= 80: return True 
 
     if unique_id:
         for cached_uid, _, _ in recent_posts:
